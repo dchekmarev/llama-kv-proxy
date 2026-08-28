@@ -19,10 +19,12 @@ if BACKENDS_RAW:
     except Exception:  # noqa: BLE001
         BACKENDS = []
 else:
-    BACKENDS = [{
-        "url": os.getenv("LLAMA_URL", "http://127.0.0.1:8000"),
-        "n_slots": int(os.getenv("N_SLOTS", "2")),
-    }]
+    BACKENDS = [
+        {
+            "url": os.getenv("LLAMA_URL", "http://127.0.0.1:8000"),
+            "n_slots": int(os.getenv("N_SLOTS", "2")),
+        }
+    ]
 
 # Words per block for LCP
 WORDS_PER_BLOCK = int(os.getenv("WORDS_PER_BLOCK", "100"))
