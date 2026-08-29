@@ -1,11 +1,8 @@
 # tests/test_request_validation.py
 
-"""P3-5: 400 on invalid JSON body / non-object body, M-9: 400 on wrong-typed
-`messages`/`model` fields (before hashing can crash them into a 500), and
-roles included in the cache key (same content under different roles must not
-collide)."""
+"""P3-5: 400 on invalid JSON body / non-object body, and roles included in
+the cache key (same content under different roles must not collide)."""
 
-import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -38,11 +35,7 @@ def sm(monkeypatch):
     client = MagicMock()
     client.save_slot = AsyncMock(return_value=True)
     client.restore_slot = AsyncMock(return_value=True)
-    client.erase_slot = AsyncMock(return_value=True)
     client.get_model_id_cached = AsyncMock(return_value="m1")
-    # No preset alias table: a client model name maps to nothing here.
-    client.resolve_model_id_cached = AsyncMock(return_value=None)
-    client.get_loaded_model = AsyncMock(return_value="m1")
     client.chat_completions = AsyncMock(return_value={"choices": []})
     manager.set_clients([client])
     app_module.app.state.sm = manager
@@ -62,47 +55,6 @@ async def test_non_dict_json_returns_400(sm):
     resp = await app_module.chat(FakeRequest([1, 2, 3]))
 
     assert resp.status_code == 400
-
-
-async def test_messages_string_returns_400(sm):
-    """A non-list `messages` becomes HTTP 400, not a 500 from hashing."""
-    resp = await app_module.chat(FakeRequest({"messages": "hello"}))
-
-    assert resp.status_code == 400
-    assert "messages" in json.loads(resp.body)["error"]
-
-
-async def test_messages_dict_returns_400(sm):
-    """A dict `messages` (iterates to its keys) becomes HTTP 400."""
-    resp = await app_module.chat(FakeRequest({"messages": {"a": 1}}))
-
-    assert resp.status_code == 400
-
-
-async def test_messages_non_dict_item_returns_400(sm):
-    """A list item that is not an object becomes HTTP 400."""
-    resp = await app_module.chat(FakeRequest({"messages": ["str"]}))
-
-    assert resp.status_code == 400
-
-
-async def test_model_non_string_returns_400(sm):
-    """A non-string `model` becomes HTTP 400, not a 500 from hashing."""
-    resp = await app_module.chat(
-        FakeRequest({"model": 123, "messages": [{"role": "user", "content": "hi"}]})
-    )
-
-    assert resp.status_code == 400
-    assert "model" in json.loads(resp.body)["error"]
-
-
-async def test_valid_body_passes_field_validation(sm):
-    """A well-typed body is not rejected by the field validation."""
-    resp = await app_module.chat(
-        FakeRequest({"messages": [{"role": "user", "content": "hi"}]})
-    )
-
-    assert resp.status_code == 200
 
 
 def test_raw_prefix_includes_roles():

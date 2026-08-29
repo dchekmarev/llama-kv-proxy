@@ -49,6 +49,8 @@ python3 -m venv venv && source venv/bin/activate && pip install -r requirements.
 python3 proxycache.py  # or: uvicorn app:app --host 0.0.0.0 --port 8081
 ```
 
+Run the proxy with a **single worker** (the default). The slot manager keeps per‑process state (locks, LRU marks); multiple workers would each track slots independently and could route two requests to the same slot.
+
 Your clients should call the proxy’s /v1/chat/completions endpoint; the proxy will handle similarity, slot selection, save/restore, and streaming vs non‑streaming automatically.
 
 If you run into issues using gpt-oss-20b with an IDE like Cline, follow these instructions: https://www.reddit.com/r/CLine/comments/1mtcj2v/making_gptoss_20b_and_cline_work_together/
