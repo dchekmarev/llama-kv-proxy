@@ -10,12 +10,10 @@ llama.cpp provides “slots,” each holding a conversation’s KV cache so repe
 
 ### How requests are balanced and slots are chosen
 
-- Slots and heat: When a request lands in a slot and its cache is valid for reuse, the slot is considered “hot,” and new requests won’t overwrite it if other options exist, preserving useful KV for future reuse.
-- Similarity matching: The proxy computes a fast, word‑block prefix similarity between the incoming conversation and existing hot slots, and only reuses a hot slot if the similarity meets a single ratio threshold (e.g., 85% of the shorter sequence), otherwise it rejects reuse to avoid polluting the hot cache with a weakly related prompt.
-- Free and cold first: If reuse is rejected, the proxy sends the request to a free slot or a cold slot (one not currently carrying a valuable hot cache), protecting high‑value contexts from accidental overwrites under load.
-- Oldest when full: If there are no free or cold slots, the proxy picks the least‑recently used slot and saves its current KV cache to disk before assigning the new request, ensuring nothing valuable is lost when the pool is exhausted.
-- Restore on demand: When a new request matches a cache that was previously saved, the proxy restores that cache into a free/cold/oldest slot and routes the request there, which takes seconds versus minutes for full prompt recomputation on long contexts, especially in IDE scenarios with 30–60k tokens.
-- Concurrency safety: Each slot is guarded with an async lock; if all are busy, the request waits for the first LRU slot to free, preventing race conditions and unintended cache overwrites during concurrent generation.
+- Big vs small: A request is “big” when its prompt has more than BIG_THRESHOLD_WORDS words. Big requests get the full cache treatment (restore, save, meta files); small ones are routed to a free or oldest slot without touching the disk cache.
+- Restore on demand: For a big request the proxy computes a fast word‑block LCP similarity against the saved .meta descriptors and, if the best match covers at least LCP_TH of the request, restores that cache into the chosen slot — seconds instead of minutes for long contexts, especially in IDE scenarios with 30–60k tokens.
+- Free first, oldest when full: The proxy picks a free slot (never used yet) or, when none are free, the least‑recently‑used one.
+- Concurrency safety: Each slot is guarded with an async lock; if all slots are busy the request waits up to ACQUIRE_TIMEOUT seconds and then gets HTTP 503.
 
 ### Save and restore from disk
 
@@ -57,11 +55,31 @@ If you run into issues using gpt-oss-20b with an IDE like Cline, follow these in
 
 ### Parameters
 
-- LLAMA_SERVER_URL: The llama.cpp server base URL, e.g., http://127.0.0.1:8080, which must expose the OpenAI‑compatible chat completions endpoint.
-- SLOTS_COUNT: The number of server slots (should match llama.cpp -np) so the proxy can track and plan reuse/restore correctly under load.
-- SIMILARITY_MIN_RATIO: One similarity threshold (e.g., 0.85) controlling both active reuse and disk restore; if a match is below this ratio, the proxy will prefer a free/cold slot or restore instead of overwriting a hot slot.
-- MIN_PREFIX_* (chars/words/blocks): Requests below this size are treated as “small” and steered to free/cold/oldest slots to avoid disturbing valuable hot caches used by large, long‑running prompts.
-- LOCAL_META_DIR and --slot-save-path: The proxy stores small .meta descriptors locally for fast candidate lookup, while llama.cpp reads/writes the real KV cache files under --slot‑save‑path using basename in the HTTP API.
+All are environment variables; defaults in parentheses.
+
+- BACKENDS: JSON list of backends, e.g., `[{"url": "http://127.0.0.1:8000", "n_slots": 2}]`. If unset, falls back to a single backend from LLAMA_URL (http://127.0.0.1:8000) and N_SLOTS (2).
+- WORDS_PER_BLOCK: Words per hash block for LCP (100).
+- BIG_THRESHOLD_WORDS: Prompts longer than this are “big” (500).
+- LCP_TH: Minimum share of the request that a cached prefix must cover to be restored (0.6).
+- META_DIR: Directory for local .meta descriptors, relative to the app directory (kv_meta).
+- REQUEST_TIMEOUT: HTTP timeout to the backends in seconds (600).
+- ACQUIRE_TIMEOUT: Maximum wait for a free slot in seconds (300).
+- MODEL_ID: Model id advertised to clients (llama.cpp).
+- MODEL_ID_TTL / MODEL_ID_TIMEOUT / UNKNOWN_MODEL_ID_RETRY: Backend model‑id cache TTL (60s), fetch timeout (5s), and retry interval while the id is unknown (5s).
+- SLOT_POLL_INTERVAL_S: Interval between backend GET /slots polls (30).
+- META_TTL_H: Age after which .meta files are evicted (24h).
+- META_MAX_FILES / META_MAX_MB: Eviction caps on file count (1000) and total size (512 MB).
+- EVICT_INTERVAL_S: Interval between eviction runs (3600).
+- PORT: Proxy port (8081).
+- LOG_LEVEL: Log level (INFO).
+
+### Endpoints
+
+- POST /v1/chat/completions — the OpenAI‑compatible chat endpoint (stream and non‑stream).
+- GET /v1/models — the advertised model id.
+- GET /slots — aggregated slot state across all backends (state, n_ctx, total_tokens, LRU mark).
+- GET /cache/stats — cache file count, total size, hit/miss counters.
+- POST /cache/clear — delete all local meta files (and best‑effort purge backend .bin files).
 
 ### Why this boosts IDE and long‑context productivity
 
