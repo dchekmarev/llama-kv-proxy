@@ -45,6 +45,12 @@ REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "600"))
 # Model id
 MODEL_ID = os.getenv("MODEL_ID", "llama.cpp")
 
+# Model id cache: TTL (seconds), short timeout for /v1/models,
+# and a short retry interval while the id is still unknown.
+MODEL_ID_TTL = float(os.getenv("MODEL_ID_TTL", "60"))
+MODEL_ID_TIMEOUT = float(os.getenv("MODEL_ID_TIMEOUT", "5"))
+UNKNOWN_MODEL_ID_RETRY = float(os.getenv("UNKNOWN_MODEL_ID_RETRY", "5"))
+
 # Service port
 PORT = int(os.getenv("PORT", "8081"))
 
