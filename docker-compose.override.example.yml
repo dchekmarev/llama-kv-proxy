@@ -11,7 +11,10 @@ services:
       # directly (llama.cpp has no disk-delete endpoint).
       - /tmp/llama-slot:/bin_cache
     environment:
-      - 'BACKENDS=[{"url": "http://host.docker.internal:9931", "n_slots": 4}]'
+      # n_slots is only a bootstrap hint, not functional: the proxy discovers
+      # the real per-model slots via GET /slots?model=X. The router preset
+      # uses slots=1 (no memory for more), so keep it at 1.
+      - 'BACKENDS=[{"url": "http://host.docker.internal:9931", "n_slots": 1}]'
       - BIG_THRESHOLD_WORDS=500
       - LCP_TH=0.6
       - MODEL_ID=llama.cpp
