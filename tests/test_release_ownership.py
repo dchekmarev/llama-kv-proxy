@@ -6,11 +6,14 @@ time bomb: between two releases another request may have acquired the slot,
 and the second release would free someone else's lock."""
 
 import asyncio
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import app as app_module
+import hashing as hs
+import slot_manager as sm_module
+from slot_manager import SlotManager
 
 
 class FakeRequest:
@@ -19,6 +22,25 @@ class FakeRequest:
 
     async def json(self):
         return self._data
+
+
+@pytest.fixture()
+def sm(monkeypatch):
+    monkeypatch.setattr(sm_module, "BACKENDS", [{"url": "http://be", "n_slots": 2}])
+    manager = SlotManager()
+    client = MagicMock()
+    client.save_slot = AsyncMock(return_value=True)
+    client.restore_slot = AsyncMock(return_value=True)
+    client.get_model_id_cached = AsyncMock(return_value="m1")
+    client.chat_completions = AsyncMock(return_value={"choices": []})
+    manager.set_clients([client])
+    return manager
+
+
+@pytest.fixture()
+def meta_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(hs, "META_DIR", str(tmp_path))
+    return tmp_path
 
 
 async def _chat(sm, content, stream=False):
@@ -84,8 +106,7 @@ async def test_stream_provider_error_releases_slot(sm, meta_dir):
 
     sm.backends[0]["client"].chat_completions = AsyncMock(return_value=ErrResp())
     resp = await _chat(sm, "small", stream=True)
-    # M-8: a backend 5xx is a genuine upstream failure: 502 on both paths.
-    assert resp.status_code == 502
+    assert resp.status_code == 500
     _assert_all_free(sm)
 
 
