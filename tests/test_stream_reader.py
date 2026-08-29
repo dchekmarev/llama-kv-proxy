@@ -153,6 +153,50 @@ async def test_backend_error_mid_stream_releases_slot(sm, no_meta):
 
 
 @pytest.mark.asyncio
+async def test_meta_written_when_save_succeeds(sm, monkeypatch):
+    """P1-1: meta file is written only when the slot save succeeded."""
+    import hashing
+
+    write_meta_async = AsyncMock()
+    monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
+    g = (0, 0)
+    lock = await _acquire(sm, g)
+    resp = FakeResp([b"a", b"b"], delay=0.005)
+
+    gen = await app_module.start_stream_task(
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm
+    )
+    _ = [c async for c in gen]
+    await _pump(0.2)
+
+    write_meta_async.assert_awaited_once()
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_meta_not_written_when_save_fails(sm, monkeypatch):
+    """P1-1: a failed slot save must not leave a meta file pointing at a
+    cache that was never saved."""
+    import hashing
+
+    write_meta_async = AsyncMock()
+    monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
+    sm.backends[0]["client"].save_slot = AsyncMock(return_value=False)
+    g = (0, 0)
+    lock = await _acquire(sm, g)
+    resp = FakeResp([b"a", b"b"], delay=0.005)
+
+    gen = await app_module.start_stream_task(
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm
+    )
+    _ = [c async for c in gen]
+    await _pump(0.2)
+
+    write_meta_async.assert_not_awaited()
+    assert not lock.locked()
+
+
+@pytest.mark.asyncio
 async def test_reader_task_kept_alive_until_done(sm, no_meta):
     """The reader task must be tracked with a strong reference until it completes
     (otherwise the event loop's weak refs allow GC mid-execution)."""
