@@ -75,6 +75,8 @@ All are environment variables; defaults in parentheses.
 - PORT: Proxy port (8081).
 - LOG_LEVEL: Log level (INFO).
 
+> **Multi-backend note:** the cache key is built from the model id of the first backend (`BACKENDS[0]`). If you run multiple backends with different models, requests dispatched to the other backends may use a wrong cache key. Keep all backends on the same model.
+
 ### Endpoints
 
 - POST /v1/chat/completions — the OpenAI‑compatible chat endpoint (stream and non‑stream).
@@ -82,6 +84,14 @@ All are environment variables; defaults in parentheses.
 - GET /slots — aggregated slot state across all backends (state, n_ctx, total_tokens, LRU mark).
 - GET /cache/stats — cache file count, total size, hit/miss counters.
 - POST /cache/clear — delete all local meta files (and best‑effort purge backend .bin files).
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+python3 -m pytest tests/ -q
+ruff check .
+```
 
 ### Why this boosts IDE and long‑context productivity
 

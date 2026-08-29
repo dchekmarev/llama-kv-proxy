@@ -84,6 +84,8 @@ python3 proxycache.py  # or: uvicorn app:app --host 0.0.0.0 --port 8081
 - `PORT`: порт прокси (8081).
 - `LOG_LEVEL`: уровень логов (INFO).
 
+> **Ограничение multi-backend:** ключ кеша строится по id модели ПЕРВОГО бэкенда (`BACKENDS[0]`). Если запускать несколько бэкендов с РАЗНЫМИ моделями, запросы, диспатченные на другие бэкенды, могут получить неверный ключ кеша. Держите все бэкенды на одной модели.
+
 ### Эндпоинты
 
 - POST /v1/chat/completions — OpenAI-совместимый чат (stream и non-stream).
@@ -91,6 +93,14 @@ python3 proxycache.py  # or: uvicorn app:app --host 0.0.0.0 --port 8081
 - GET /slots — агрегированное состояние слотов всех бэкендов.
 - GET /cache/stats — количество файлов кэша, общий размер, счётчики hit/miss.
 - POST /cache/clear — удалить все локальные meta-файлы (и best-effort .bin на бэкендах).
+
+### Тесты
+
+```bash
+pip install -r requirements-dev.txt
+python3 -m pytest tests/ -q
+ruff check .
+```
 
 ### Пересылка запросов
 
