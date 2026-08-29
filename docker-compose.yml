@@ -10,11 +10,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      - 'BACKENDS=[{"url": "http://host.docker.internal:9931", "n_slots": 4}]'
       - PORT=8080
-      - BIG_THRESHOLD_WORDS=500
-      - LCP_TH=0.6
-      - MODEL_ID=llama.cpp
       - LOG_LEVEL=INFO
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request, json, sys; d = json.load(urllib.request.urlopen('http://localhost:8080/proxy/health')); sys.exit(0 if d.get('ok') else 1)"]

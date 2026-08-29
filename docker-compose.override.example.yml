@@ -5,20 +5,15 @@
 # `docker compose up` merges this file on top of docker-compose.yml
 # automatically (no extra flags).
 services:
-  llama-kv-proxy:
+  proxycache:
     volumes:
       # Mount the host --slot-save-path so the proxy can delete .bin files
       # directly (llama.cpp has no disk-delete endpoint).
-      - /var/lib/llama-slots:/bin_cache
+      - /tmp/llama-slot:/bin_cache
     environment:
-      # n_slots is only a bootstrap hint, not functional: the proxy discovers
-      # the real per-model slots via GET /slots?model=X. The router preset
-      # uses slots=1 (no memory for more), so keep it at 1.
-      - 'BACKENDS=[{"url": "http://host.docker.internal:9931", "n_slots": 1}]'
+      - 'BACKENDS=[{"url": "http://host.docker.internal:9931", "n_slots": 4}]'
       - BIG_THRESHOLD_WORDS=500
       - LCP_TH=0.6
       - MODEL_ID=llama.cpp
       - BIN_CACHE_DIR=/bin_cache
       - BIN_CACHE_MAX_MB=10240
-      # Reconcile meta/.bin drift (both directions) every 600s; 0 disables.
-      - BIN_RECONCILE_INTERVAL_S=600
