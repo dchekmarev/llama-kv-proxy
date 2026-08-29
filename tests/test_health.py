@@ -1,6 +1,6 @@
 # tests/test_health.py
 
-"""P3-4: /proxy/health endpoint — backend availability probe plus slot state."""
+"""P3-4: /health endpoint — backend availability probe plus slot state."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -48,7 +48,7 @@ async def test_health_backend_down():
 
 
 async def test_health_endpoint_mixed_backends(sm):
-    """/proxy/health aggregates per-backend probes and the overall ok flag."""
+    """/health aggregates per-backend probes and the overall ok flag."""
     good = MagicMock()
     good.health = AsyncMock(
         return_value={"url": "http://be1", "ok": True, "model_id": "m1"}
@@ -57,7 +57,7 @@ async def test_health_endpoint_mixed_backends(sm):
     bad.health = AsyncMock(
         return_value={"url": "http://be2", "ok": False, "model_id": None}
     )
-    sm.set_backend_slots(0, "m1", [{"id": 0, "state": "busy"}])
+    sm.set_backend_slots(0, [{"id": 0, "state": "busy"}])
     app_module.app.state.sm = sm
     app_module.app.state.clients = [good, bad]
 
