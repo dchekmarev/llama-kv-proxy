@@ -7,17 +7,17 @@ import importlib
 
 import pytest
 
-import chat_flow
+import app as app_module
 import config
 
 
 def test_acquire_timeout_default():
-    assert config.ACQUIRE_TIMEOUT == pytest.approx(1500.0)
+    assert config.ACQUIRE_TIMEOUT == pytest.approx(300.0)
 
 
-def test_chat_flow_uses_config_acquire_timeout():
-    """chat_flow must take the timeout from config, not hardcode its own copy."""
-    assert chat_flow.ACQUIRE_TIMEOUT == config.ACQUIRE_TIMEOUT
+def test_app_uses_config_acquire_timeout():
+    """app must take the timeout from config, not hardcode its own copy."""
+    assert app_module.ACQUIRE_TIMEOUT == config.ACQUIRE_TIMEOUT
 
 
 def test_acquire_timeout_from_env(monkeypatch):

@@ -82,6 +82,9 @@ os.makedirs(META_DIR, exist_ok=True)
 # HTTP timeout
 REQUEST_TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "600"))
 
+# Timeout for waiting on a free slot when all slots are busy.
+ACQUIRE_TIMEOUT = float(os.getenv("ACQUIRE_TIMEOUT", "300"))
+
 # Model id
 MODEL_ID = os.getenv("MODEL_ID", "llama.cpp")
 
