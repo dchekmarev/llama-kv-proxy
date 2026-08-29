@@ -100,7 +100,8 @@ All are environment variables; defaults in parentheses.
 
 - POST /v1/chat/completions — the OpenAI‑compatible chat endpoint (stream and non‑stream).
 - GET /v1/models — the backend model list (proxied from the first backend); falls back to MODEL_ID when the backend is unavailable.
-- GET /slots — aggregated slot state across all backends (state, n_ctx, total_tokens, LRU mark).
+- GET /proxy/slots — aggregated slot state across all backends (state, n_ctx, total_tokens, LRU mark).
+- GET /proxy/health — backend availability probe plus slot state.
 - GET /cache/stats — cache file count, total size, hit/miss counters.
 - POST /cache/clear — delete all local meta files (and best‑effort purge backend .bin files).
 

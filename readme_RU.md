@@ -109,7 +109,8 @@ docker inspect proxycache --format='{{.State.Health.Status}}'
 
 - POST /v1/chat/completions — OpenAI-совместимый чат (stream и non-stream).
 - GET /v1/models — список моделей бэкенда (проксируется с первого бэкенда); при недоступности бэкенда — MODEL_ID.
-- GET /slots — агрегированное состояние слотов всех бэкендов.
+- GET /proxy/slots — агрегированное состояние слотов всех бэкендов.
+- GET /proxy/health — доступность бэкендов + состояние слотов.
 - GET /cache/stats — количество файлов кэша, общий размер, счётчики hit/miss.
 - POST /cache/clear — удалить все локальные meta-файлы (и best-effort .bin на бэкендах).
 

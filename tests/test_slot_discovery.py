@@ -1,7 +1,7 @@
 # tests/test_slot_discovery.py
 
 """P3-2: slot discovery via GET /slots, pool narrowing on mismatch,
-and the aggregated /slots endpoint."""
+and the aggregated /proxy/slots endpoint."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -105,7 +105,7 @@ def test_aggregated_state(sm):
 
 
 async def test_slots_endpoint(sm):
-    """GET /slots returns the aggregated state."""
+    """GET /proxy/slots returns the aggregated state."""
     sm.set_backend_slots(0, [_slot(0)])
     app_module.app.state.sm = sm
 
