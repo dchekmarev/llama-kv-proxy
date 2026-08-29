@@ -97,3 +97,60 @@ async def test_wait_for_timeout_releases_lock(sm):
 
     for g, lock in sm._locks.items():
         assert not lock.locked(), f"slot {g} leaked after wait_for timeout"
+
+
+@pytest.mark.asyncio
+async def test_acquire_marks_slot_used(sm):
+    """P1-5: occupying a slot is the 'last used' moment for LRU — even for
+    small requests that never save."""
+    g, _, _ = await sm.acquire_for_request(None)
+    try:
+        assert sm._last_used[g] > 0, "acquire must mark the slot as used"
+    finally:
+        sm.release(g)
+
+
+@pytest.mark.asyncio
+async def test_failed_save_does_not_refresh_usage(sm, monkeypatch):
+    """P1-5: a failed save must not refresh the LRU mark."""
+    fake = {"now": 1000.0}
+    monkeypatch.setattr(sm_module.time, "time", lambda: fake["now"])
+    g, _, _ = await sm.acquire_for_request(None)
+    ts_acquire = sm._last_used[g]
+    try:
+        sm.backends[0]["client"].save_slot = AsyncMock(return_value=False)
+        ok = await sm.save_after(g, "k" * 16)
+        assert ok is False
+        assert sm._last_used[g] == ts_acquire, (
+            "failed save must not refresh the LRU mark"
+        )
+    finally:
+        sm.release(g)
+
+
+@pytest.mark.asyncio
+async def test_successful_save_refreshes_usage(sm, monkeypatch):
+    """P1-5: a successful save refreshes the LRU mark."""
+    fake = {"now": 1000.0}
+    monkeypatch.setattr(sm_module.time, "time", lambda: fake["now"])
+    g, _, _ = await sm.acquire_for_request(None)
+    ts_acquire = sm._last_used[g]
+    try:
+        fake["now"] = 2000.0
+        sm.backends[0]["client"].save_slot = AsyncMock(return_value=True)
+        ok = await sm.save_after(g, "k" * 16)
+        assert ok is True
+        assert sm._last_used[g] == 2000.0, "successful save must refresh the mark"
+        assert sm._last_used[g] > ts_acquire
+    finally:
+        sm.release(g)
+
+
+def test_oldest_slot_selected_by_usage(sm):
+    """P1-5: with no free slots, the least recently used one is selected."""
+    sm._last_used[(0, 0)] = 1000.0
+    sm._last_used[(0, 1)] = 1500.0
+
+    g, _lock = sm._get_free_or_oldest()
+
+    assert g == (0, 0), "the least recently used slot must be selected"
