@@ -113,6 +113,7 @@ docker inspect proxycache --format='{{.State.Health.Status}}'
 - GET /proxy/health — доступность бэкендов + состояние слотов.
 - GET /cache/stats — количество файлов кэша, общий размер, счётчики hit/miss.
 - POST /cache/clear — удалить все локальные meta-файлы (и best-effort .bin на бэкендах).
+- Любой другой путь — форвардится в первый бэкенд как есть (нативные эндпоинты llama.cpp: `/slots?model=...`, `/health`, `/metrics`, `/tokenize`, …), ответ стримится.
 
 ### Тесты
 

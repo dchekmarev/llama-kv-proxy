@@ -104,6 +104,7 @@ All are environment variables; defaults in parentheses.
 - GET /proxy/health — backend availability probe plus slot state.
 - GET /cache/stats — cache file count, total size, hit/miss counters.
 - POST /cache/clear — delete all local meta files (and best‑effort purge backend .bin files).
+- Any other path — forwarded to the first backend as‑is (native llama.cpp endpoints: `/slots?model=...`, `/health`, `/metrics`, `/tokenize`, …), with the response streamed back.
 
 ### Tests
 
