@@ -66,7 +66,7 @@ All are environment variables; defaults in parentheses.
 - META_DIR: Directory for local .meta descriptors, relative to the app directory (kv_meta).
 - REQUEST_TIMEOUT: HTTP timeout to the backends in seconds (600).
 - ACQUIRE_TIMEOUT: Maximum wait for a free slot in seconds (300).
-- MODEL_ID: Model id advertised to clients (llama.cpp).
+- MODEL_ID: Fallback model id returned by /v1/models when the backend is unavailable (llama.cpp).
 - MODEL_ID_TTL / MODEL_ID_TIMEOUT / UNKNOWN_MODEL_ID_RETRY: Backend model‑id cache TTL (60s), fetch timeout (5s), and retry interval while the id is unknown (5s).
 - SLOT_POLL_INTERVAL_S: Interval between backend GET /slots polls (30).
 - META_TTL_H: Age after which .meta files are evicted (24h).
@@ -80,7 +80,7 @@ All are environment variables; defaults in parentheses.
 ### Endpoints
 
 - POST /v1/chat/completions — the OpenAI‑compatible chat endpoint (stream and non‑stream).
-- GET /v1/models — the advertised model id.
+- GET /v1/models — the backend model list (proxied from the first backend); falls back to MODEL_ID when the backend is unavailable.
 - GET /slots — aggregated slot state across all backends (state, n_ctx, total_tokens, LRU mark).
 - GET /cache/stats — cache file count, total size, hit/miss counters.
 - POST /cache/clear — delete all local meta files (and best‑effort purge backend .bin files).

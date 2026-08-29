@@ -75,7 +75,7 @@ python3 proxycache.py  # or: uvicorn app:app --host 0.0.0.0 --port 8081
 - `META_DIR`: папка для локальных .meta-файлов, относительно папки приложения (kv_meta).
 - `REQUEST_TIMEOUT`: таймаут HTTP-запросов к бэкендам в секундах (600).
 - `ACQUIRE_TIMEOUT`: максимальное ожидание свободного слота в секундах (300).
-- `MODEL_ID`: id модели, который прокси показывает клиентам (llama.cpp).
+- `MODEL_ID`: запасной id модели, который прокси отдаёт в /v1/models, когда бэкенд недоступен (llama.cpp).
 - `MODEL_ID_TTL` / `MODEL_ID_TIMEOUT` / `UNKNOWN_MODEL_ID_RETRY`: TTL кэша id модели с бэкенда (60с), таймаут запроса (5с) и интервал повтора, пока id неизвестен (5с).
 - `SLOT_POLL_INTERVAL_S`: интервал опроса GET /slots бэкендов (30).
 - `META_TTL_H`: возраст .meta-файлов, после которого они удаляются (24ч).
@@ -89,7 +89,7 @@ python3 proxycache.py  # or: uvicorn app:app --host 0.0.0.0 --port 8081
 ### Эндпоинты
 
 - POST /v1/chat/completions — OpenAI-совместимый чат (stream и non-stream).
-- GET /v1/models — id модели.
+- GET /v1/models — список моделей бэкенда (проксируется с первого бэкенда); при недоступности бэкенда — MODEL_ID.
 - GET /slots — агрегированное состояние слотов всех бэкендов.
 - GET /cache/stats — количество файлов кэша, общий размер, счётчики hit/miss.
 - POST /cache/clear — удалить все локальные meta-файлы (и best-effort .bin на бэкендах).
