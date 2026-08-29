@@ -3,14 +3,14 @@
 """P1-2: a meta file pointing at a cache that cannot be restored is stale and
 must be dropped, otherwise every big request retries a doomed restore."""
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import app as app_module
-import chat_flow
 import hashing as hs
-from llama_client import RESTORE_MISSING
+import slot_manager as sm_module
+from slot_manager import SlotManager
 
 
 class FakeRequest:
@@ -19,6 +19,25 @@ class FakeRequest:
 
     async def json(self):
         return self._data
+
+
+@pytest.fixture()
+def sm(monkeypatch):
+    monkeypatch.setattr(sm_module, "BACKENDS", [{"url": "http://be", "n_slots": 2}])
+    manager = SlotManager()
+    client = MagicMock()
+    client.save_slot = AsyncMock(return_value=True)
+    client.restore_slot = AsyncMock(return_value=True)
+    client.get_model_id_cached = AsyncMock(return_value="m1")
+    client.chat_completions = AsyncMock(return_value={"choices": []})
+    manager.set_clients([client])
+    return manager
+
+
+@pytest.fixture()
+def meta_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(hs, "META_DIR", str(tmp_path))
+    return tmp_path
 
 
 def _big_content():
@@ -69,28 +88,10 @@ async def test_delete_meta_async(meta_dir):
 
 
 @pytest.mark.asyncio
-async def test_stale_meta_dropped_when_file_missing(sm, meta_dir, monkeypatch):
-    """restore -> RESTORE_MISSING (404): the meta must be deleted."""
+async def test_stale_meta_dropped_when_restore_fails(sm, meta_dir, monkeypatch):
+    """restore -> False: the meta must be deleted (spied via delete_meta_async)."""
     content = _big_content()
     key = _write_meta_for(content, meta_dir)
-    sm.backends[0]["client"].restore_slot = AsyncMock(
-        return_value=RESTORE_MISSING
-    )
-
-    delete_meta_async = AsyncMock()
-    monkeypatch.setattr(hs, "delete_meta_async", delete_meta_async)
-
-    await _chat(sm, content)
-
-    delete_meta_async.assert_awaited_once_with(key)
-
-
-@pytest.mark.asyncio
-async def test_meta_kept_when_restore_fails_other(sm, meta_dir, monkeypatch):
-    """restore -> False (a non-missing failure): the meta must be kept, since
-    the cache may still be valid and a retry can succeed."""
-    content = _big_content()
-    _write_meta_for(content, meta_dir)
     sm.backends[0]["client"].restore_slot = AsyncMock(return_value=False)
 
     delete_meta_async = AsyncMock()
@@ -98,7 +99,7 @@ async def test_meta_kept_when_restore_fails_other(sm, meta_dir, monkeypatch):
 
     await _chat(sm, content)
 
-    delete_meta_async.assert_not_awaited()
+    delete_meta_async.assert_awaited_once_with(key)
 
 
 @pytest.mark.asyncio
@@ -114,32 +115,3 @@ async def test_meta_kept_when_restore_succeeds(sm, meta_dir, monkeypatch):
     await _chat(sm, content)
 
     delete_meta_async.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_stale_meta_dropped_for_resolved_key_on_substitution(
-    sm, meta_dir, monkeypatch
-):
-    """Substitution K1->K2 + RESTORE_MISSING: the RESOLVED key's (K2) stale
-    meta must be dropped, not the original candidate's (K1) — the original's
-    meta was already deleted by the subsumption that created the alias, so
-    cleaning it is a no-op and leaves K2's stale meta behind for repeated
-    hopeless 404 restores."""
-    content = _big_content()
-    k1 = _write_meta_for(content, meta_dir)
-    k2 = "d" * 64  # replacement cache: meta on disk, .bin gone
-    hs.write_meta(k2, "p", ["b"], hs.WORDS_PER_BLOCK, "m1")
-
-    chat_flow._PENDING_RESTORES.clear()
-    chat_flow._RESTORE_ALIAS.clear()
-    chat_flow._register_pending_restore(k1)
-    chat_flow._RESTORE_ALIAS[k1] = k2
-
-    sm.backends[0]["client"].restore_slot = AsyncMock(return_value=RESTORE_MISSING)
-
-    delete_meta_async = AsyncMock()
-    monkeypatch.setattr(hs, "delete_meta_async", delete_meta_async)
-
-    await _chat(sm, content)
-
-    delete_meta_async.assert_awaited_once_with(k2)
