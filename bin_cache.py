@@ -76,6 +76,11 @@ def clean_bin_cache(dir: str, max_mb: int) -> dict:
             os.remove(path)
             deleted.append(os.path.basename(path))
             total -= size
+            log.info(
+                "bin_cache_deleted file=%s size_mb=%.1f",
+                os.path.basename(path),
+                size / 1024 / 1024,
+            )
         except OSError as e:
             log.warning("bin_cache_remove_fail %s: %s", path, e)
 
@@ -90,7 +95,11 @@ def delete_bin_file(dir: str, basename: str) -> bool:
         return False
     path = os.path.join(dir, basename)
     try:
+        size = os.path.getsize(path)
         os.remove(path)
+        log.info(
+            "bin_cache_deleted file=%s size_mb=%.1f", basename, size / 1024 / 1024
+        )
         return True
     except FileNotFoundError:
         return False
@@ -108,8 +117,14 @@ def clear_bin_cache(dir: str) -> int:
         if not os.path.isfile(path):
             continue
         try:
+            size = os.path.getsize(path)
             os.remove(path)
             deleted += 1
+            log.info(
+                "bin_cache_deleted file=%s size_mb=%.1f",
+                os.path.basename(path),
+                size / 1024 / 1024,
+            )
         except OSError as e:
             log.warning("bin_cache_clear_fail %s: %s", path, e)
     log.info("bin_cache_clear deleted=%d", deleted)
