@@ -21,9 +21,7 @@ from slot_manager import SlotManager
 
 @pytest.fixture()
 def sm(monkeypatch):
-    monkeypatch.setattr(
-        sm_module, "BACKENDS", [{"url": "http://be", "n_slots": 2}]
-    )
+    monkeypatch.setattr(sm_module, "BACKENDS", [{"url": "http://be", "n_slots": 2}])
     manager = SlotManager()
     client = MagicMock()
     client.restore_slot = AsyncMock(return_value=True)
