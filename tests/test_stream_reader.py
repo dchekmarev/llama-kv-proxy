@@ -153,6 +153,29 @@ async def test_backend_error_mid_stream_releases_slot(sm, no_meta):
 
 
 @pytest.mark.asyncio
+async def test_partial_stream_does_not_save_cache(sm, monkeypatch):
+    """P1-4: backend stream error mid-stream: the partial KV cache must not be
+    saved (it is useless for restore and wastes disk), but the slot is
+    released."""
+    import hashing
+
+    write_meta_async = AsyncMock()
+    monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
+    g = (0, 0)
+    lock = await _acquire(sm, g)
+    resp = FakeResp([b"a", b"b", b"c"], delay=0.005, fail_after=2)
+
+    gen = await app_module.start_stream_task(
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm
+    )
+    _ = [c async for c in gen]
+
+    assert not lock.locked(), "slot must be released when backend stream errors"
+    sm.backends[0]["client"].save_slot.assert_not_awaited()
+    write_meta_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_meta_written_when_save_succeeds(sm, monkeypatch):
     """P1-1: meta file is written only when the slot save succeeded."""
     import hashing
