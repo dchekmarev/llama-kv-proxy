@@ -14,12 +14,19 @@ import pytest
 import app as app_module
 
 
+class StarletteLikeHeaders(dict):
+    """Mimics Starlette Headers: iteration yields keys, not (key, value) pairs."""
+
+    def __iter__(self):
+        return iter(self.keys())
+
+
 class FakeRequest:
     def __init__(self, method, query="", body=b"", headers=None):
         self.method = method
         self.url = SimpleNamespace(query=query)
         self._body = body
-        self.headers = headers or [("host", "test")]
+        self.headers = headers or StarletteLikeHeaders({"host": "test"})
 
     async def body(self):
         return self._body
@@ -84,6 +91,20 @@ async def test_passthrough_forwards_body_and_headers():
     kwargs = client.client.build_request.call_args.kwargs
     assert kwargs["content"] == b'{"content":"hi"}'
     assert kwargs["headers"]["x-custom"] == "42"
+    assert "host" not in {k.lower() for k in kwargs["headers"]}
+
+
+@pytest.mark.asyncio
+async def test_passthrough_starlette_style_headers():
+    """Production shape: request.headers is a mapping iterating keys only."""
+    client, _, _ = _mock_client([b"ok"])
+    _setup([client])
+    headers = StarletteLikeHeaders({"host": "test", "x-custom": "7"})
+
+    await _passthrough("metrics", headers=headers)
+
+    kwargs = client.client.build_request.call_args.kwargs
+    assert kwargs["headers"]["x-custom"] == "7"
     assert "host" not in {k.lower() for k in kwargs["headers"]}
 
 
