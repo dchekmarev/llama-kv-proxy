@@ -72,41 +72,47 @@ async def test_get_slots_without_model_sends_no_param():
 
 
 @pytest.mark.asyncio
-async def test_save_slot_with_model_adds_param():
+async def test_save_slot_with_model_in_body():
+    """A router routes the save by the model in the BODY, not the query."""
     c = make_client()
     c.client.post = AsyncMock(return_value=resp(200, {}))
     assert await c.save_slot(0, "abc", model="qwen.nvfp4") is True
-    assert c.client.post.call_args.kwargs.get("params") == {
-        "action": "save",
+    assert c.client.post.call_args.kwargs.get("params") == {"action": "save"}
+    assert c.client.post.call_args.kwargs.get("json") == {
+        "filename": "abc",
         "model": "qwen.nvfp4",
     }
 
 
 @pytest.mark.asyncio
-async def test_save_slot_without_model_omits_param():
+async def test_save_slot_without_model_omits_model():
     c = make_client()
     c.client.post = AsyncMock(return_value=resp(200, {}))
     await c.save_slot(0, "abc")
     assert c.client.post.call_args.kwargs.get("params") == {"action": "save"}
+    assert c.client.post.call_args.kwargs.get("json") == {"filename": "abc"}
 
 
 @pytest.mark.asyncio
-async def test_restore_slot_with_model_adds_param():
+async def test_restore_slot_with_model_in_body():
+    """A router routes the restore by the model in the BODY, not the query."""
     c = make_client()
     c.client.post = AsyncMock(return_value=resp(200, {}))
     assert await c.restore_slot(0, "abc", model="qwen.nvfp4") is True
-    assert c.client.post.call_args.kwargs.get("params") == {
-        "action": "restore",
+    assert c.client.post.call_args.kwargs.get("params") == {"action": "restore"}
+    assert c.client.post.call_args.kwargs.get("json") == {
+        "filename": "abc",
         "model": "qwen.nvfp4",
     }
 
 
 @pytest.mark.asyncio
-async def test_restore_slot_without_model_omits_param():
+async def test_restore_slot_without_model_omits_model():
     c = make_client()
     c.client.post = AsyncMock(return_value=resp(200, {}))
     await c.restore_slot(0, "abc")
     assert c.client.post.call_args.kwargs.get("params") == {"action": "restore"}
+    assert c.client.post.call_args.kwargs.get("json") == {"filename": "abc"}
 
 
 # --- delete_cache_file -----------------------------------------------------
