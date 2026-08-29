@@ -94,6 +94,9 @@ MODEL_ID_TTL = float(os.getenv("MODEL_ID_TTL", "60"))
 MODEL_ID_TIMEOUT = float(os.getenv("MODEL_ID_TIMEOUT", "5"))
 UNKNOWN_MODEL_ID_RETRY = float(os.getenv("UNKNOWN_MODEL_ID_RETRY", "5"))
 
+# Interval (seconds) between backend slot-state polls (GET /slots).
+SLOT_POLL_INTERVAL_S = float(os.getenv("SLOT_POLL_INTERVAL_S", "30"))
+
 # Cache eviction: TTL (hours), file count cap, total size cap (MB),
 # and the interval (seconds) between periodic eviction runs.
 META_TTL_H = float(os.getenv("META_TTL_H", "24"))
