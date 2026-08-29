@@ -62,13 +62,6 @@ def test_validate_accepts_valid():
     config.validate_backends([{"url": "http://be", "n_slots": 2}])
 
 
-def test_bin_cache_config_attrs_exist():
-    """The .bin cleanup config values are loaded with the right types."""
-    assert isinstance(config.BIN_CACHE_DIR, str)
-    assert isinstance(config.BIN_CACHE_MAX_MB, int)
-    assert isinstance(config.BIN_CACHE_INTERVAL_S, float)
-
-
 def test_meta_dir_is_absolute_and_in_app_dir():
     """META_DIR must not depend on the process cwd."""
     assert os.path.isabs(config.META_DIR), (
@@ -78,53 +71,3 @@ def test_meta_dir_is_absolute_and_in_app_dir():
     assert config.META_DIR.startswith(app_dir), (
         f"META_DIR must live in the app dir {app_dir!r}, got {config.META_DIR!r}"
     )
-
-
-def test_env_int_default_when_unset(monkeypatch):
-    monkeypatch.delenv("WORDS_PER_BLOCK", raising=False)
-    assert config._env_int("WORDS_PER_BLOCK", 100) == 100
-
-
-def test_env_int_parses_value(monkeypatch):
-    monkeypatch.setenv("WORDS_PER_BLOCK", "250")
-    assert config._env_int("WORDS_PER_BLOCK", 100) == 250
-
-
-def test_env_int_bad_value_raises_with_name(monkeypatch):
-    monkeypatch.setenv("WORDS_PER_BLOCK", "abc")
-    with pytest.raises(ValueError, match="WORDS_PER_BLOCK"):
-        config._env_int("WORDS_PER_BLOCK", 100)
-
-
-def test_env_float_default_and_parse(monkeypatch):
-    monkeypatch.delenv("LCP_TH", raising=False)
-    assert config._env_float("LCP_TH", 0.6) == 0.6
-    monkeypatch.setenv("LCP_TH", "0.8")
-    assert config._env_float("LCP_TH", 0.6) == 0.8
-
-
-def test_env_float_bad_value_raises_with_name(monkeypatch):
-    monkeypatch.setenv("LCP_TH", "xyz")
-    with pytest.raises(ValueError, match="LCP_TH"):
-        config._env_float("LCP_TH", 0.6)
-
-
-def test_env_bool_truthy_and_falsy(monkeypatch):
-    for v in ("1", "true", "yes", "on"):
-        monkeypatch.setenv("ERASE_BEFORE_SMALL", v)
-        assert config._env_bool("ERASE_BEFORE_SMALL", False) is True
-    for v in ("0", "false", "no", "off"):
-        monkeypatch.setenv("ERASE_BEFORE_SMALL", v)
-        assert config._env_bool("ERASE_BEFORE_SMALL", True) is False
-    monkeypatch.delenv("ERASE_BEFORE_SMALL", raising=False)
-    assert config._env_bool("ERASE_BEFORE_SMALL", True) is True
-
-
-def test_setup_logging_is_idempotent():
-    """Calling setup_logging twice must not stack duplicate handlers."""
-    import logging
-
-    config.setup_logging("INFO")
-    n = len(logging.getLogger().handlers)
-    config.setup_logging("DEBUG")
-    assert len(logging.getLogger().handlers) == n

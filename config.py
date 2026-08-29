@@ -11,20 +11,58 @@ import json
 import logging
 import os
 
+
+def parse_backends_env(raw: str | None) -> list[dict]:
+    """Parse the BACKENDS env var (JSON list) or fall back to LLAMA_URL/N_SLOTS.
+
+    Raises ValueError with a clear message on broken JSON or a bad N_SLOTS.
+    """
+    if not raw:
+        try:
+            n_slots = int(os.getenv("N_SLOTS", "2"))
+        except ValueError as e:
+            raise ValueError(f"N_SLOTS env must be an integer: {e}") from e
+        return [
+            {"url": os.getenv("LLAMA_URL", "http://127.0.0.1:8000"), "n_slots": n_slots}
+        ]
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"BACKENDS env is not valid JSON: {e}") from e
+    return parsed
+
+
+def validate_backends(backends: object) -> None:
+    """Validate the backend list; raise ValueError with a clear message.
+
+    A silently empty list used to cause a confusing IndexError later
+    (clients[0] / min() over no slots).
+    """
+    if not isinstance(backends, list) or not backends:
+        raise ValueError(
+            "BACKENDS config is empty or not a list; provide a JSON list like "
+            '[{"url": "http://127.0.0.1:8000", "n_slots": 2}]'
+        )
+    for i, be in enumerate(backends):
+        if not isinstance(be, dict):
+            # ValueError on purpose: validate_backends raises a single
+            # exception type so callers catch one thing.
+            raise ValueError(f"BACKENDS[{i}] must be an object, got {be!r}")  # noqa: TRY004
+        url = be.get("url")
+        if not isinstance(url, str) or not url:
+            raise ValueError(f"BACKENDS[{i}].url is missing or not a string: {be!r}")
+        n_slots = be.get("n_slots")
+        if not isinstance(n_slots, int) or isinstance(n_slots, bool) or n_slots <= 0:
+            raise ValueError(
+                f"BACKENDS[{i}].n_slots must be a positive integer: {be!r}"
+            )
+
+
 # Backends
 BACKENDS_RAW = os.getenv("BACKENDS")
-if BACKENDS_RAW:
-    try:
-        BACKENDS = json.loads(BACKENDS_RAW)
-    except Exception:  # noqa: BLE001
-        BACKENDS = []
-else:
-    BACKENDS = [
-        {
-            "url": os.getenv("LLAMA_URL", "http://127.0.0.1:8000"),
-            "n_slots": int(os.getenv("N_SLOTS", "2")),
-        }
-    ]
+BACKENDS = parse_backends_env(BACKENDS_RAW)
+validate_backends(BACKENDS)
 
 # Words per block for LCP
 WORDS_PER_BLOCK = int(os.getenv("WORDS_PER_BLOCK", "100"))
@@ -35,8 +73,10 @@ BIG_THRESHOLD_WORDS = int(os.getenv("BIG_THRESHOLD_WORDS", "500"))
 # LCP threshold (0..1)
 LCP_TH = float(os.getenv("LCP_TH", "0.6"))
 
-# Meta dir
-META_DIR = os.path.join(os.getcwd(), os.getenv("META_DIR", "kv_meta"))
+# Meta dir: anchored to the app directory, not the process cwd, so the cache
+# location does not change depending on where the process was started.
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+META_DIR = os.path.join(APP_DIR, os.getenv("META_DIR", "kv_meta"))
 os.makedirs(META_DIR, exist_ok=True)
 
 # HTTP timeout
