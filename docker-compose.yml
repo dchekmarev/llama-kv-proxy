@@ -1,35 +1,23 @@
 services:
-  llama-kv-proxy:
-    build:
-      context: .
-      args:
-        # Match the host user so mounted volumes are writable without chown.
-        # $UID is auto-set in bash; export GID=$(id -g) to match the host group.
-        UID: ${UID:-1000}
-        GID: ${GID:-1000}
-    container_name: llama-kv-proxy
+  proxycache:
+    build: .
+    container_name: proxycache
     restart: unless-stopped
     ports:
       - "8080:8080"
     volumes:
       - ./kv_meta:/app/kv_meta
-      - ./kv_reqlog:/app/kv_reqlog
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
+      - 'BACKENDS=[{"url": "http://host.docker.internal:9931", "n_slots": 4}]'
       - PORT=8080
+      - BIG_THRESHOLD_WORDS=500
+      - LCP_TH=0.6
+      - MODEL_ID=llama.cpp
       - LOG_LEVEL=INFO
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: "1.0"
-        reservations:
-          memory: 512M
-          cpus: "0.25"
     healthcheck:
-      # Probe the port the app actually listens on (PORT env, default 8081).
-      test: ["CMD", "python", "-c", "import json, os, sys, urllib.request; p = os.environ.get('PORT', '8081'); d = json.load(urllib.request.urlopen(f'http://localhost:{p}/proxy/health')); sys.exit(0 if d.get('ok') else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request, json, sys; d = json.load(urllib.request.urlopen('http://localhost:8080/health')); sys.exit(0 if d.get('ok') else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -55,6 +55,25 @@ Your clients should call the proxy’s /v1/chat/completions endpoint; the proxy 
 
 If you run into issues using gpt-oss-20b with an IDE like Cline, follow these instructions: https://www.reddit.com/r/CLine/comments/1mtcj2v/making_gptoss_20b_and_cline_work_together/
 
+### Docker
+
+```bash
+docker compose up -d --build
+```
+
+The container listens on port **8080** (`PORT` env var) and reaches the backend through `host.docker.internal` (see `BACKENDS` in `docker-compose.yml`).
+
+- KV cache metadata is persisted in `./kv_meta` (mounted volume) — survives container restarts.
+- The actual KV cache `.bin` files are managed by llama.cpp under `--slot-save-path`.
+
+Diagnostics:
+
+```bash
+docker compose logs -f
+docker compose ps
+docker inspect proxycache --format='{{.State.Health.Status}}'
+```
+
 ### Parameters
 
 All are environment variables; defaults in parentheses.

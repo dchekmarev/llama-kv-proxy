@@ -64,6 +64,25 @@ python3 proxycache.py  # or: uvicorn app:app --host 0.0.0.0 --port 8081
 
 Теперь все запросы нужно отправлять не напрямую в llama.cpp, а на адрес прокси-сервиса (обычно `http://127.0.0.1:8081`). Он сам разберётся, в какой слот направить запрос, что сохранить на диск и что подгрузить обратно.
 
+### Docker
+
+```bash
+docker compose up -d --build
+```
+
+Контейнер слушает порт **8080** (переменная `PORT`) и достаёт бэкенд через `host.docker.internal` (см. `BACKENDS` в `docker-compose.yml`).
+
+- Метаданные KV-кеша персистятся в `./kv_meta` (подключённый volume) — переживают перезапуск контейнера.
+- Фактические `.bin`-файлы KV-кеша управляет llama.cpp через `--slot-save-path`.
+
+Диагностика:
+
+```bash
+docker compose logs -f
+docker compose ps
+docker inspect proxycache --format='{{.State.Health.Status}}'
+```
+
 ### Описание параметров
 
 Все параметры задаются переменными окружения (значения по умолчанию в скобках):

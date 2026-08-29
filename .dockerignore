@@ -1,7 +1,5 @@
 .git/
 kv_meta/
-kv_reqlog/
-docker-compose.override.yml
 __pycache__/
 *.pyc
 .env
