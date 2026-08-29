@@ -59,8 +59,8 @@ def no_meta(monkeypatch):
     monkeypatch.setattr(hashing, "write_meta", lambda *a, **k: None)
 
 
-async def _acquire(sm, g=(0, 0)):
-    lock = sm._locks[g]
+async def _acquire(sm, g=(0, "model", 0)):
+    lock = sm._lock_for(g)
     await lock.acquire()
     return lock
 
@@ -71,7 +71,7 @@ async def _pump(seconds=0.3):
 
 @pytest.mark.asyncio
 async def test_normal_stream_delivers_all_and_releases(sm, no_meta):
-    g = (0, 0)
+    g = (0, "model", 0)
     lock = await _acquire(sm, g)
     chunks = [b"c%d" % i for i in range(40)]
     resp = FakeResp(chunks, delay=0.005)
@@ -92,7 +92,7 @@ async def test_normal_stream_delivers_all_and_releases(sm, no_meta):
 async def test_slot_released_when_client_disconnects(sm, no_meta):
     """Client disconnect: gen is closed early; the reader must not block on a
     full queue and must release the slot."""
-    g = (0, 0)
+    g = (0, "model", 0)
     lock = await _acquire(sm, g)
     chunks = [b"c%d" % i for i in range(64)]
     resp = FakeResp(chunks, delay=0.005)
@@ -119,7 +119,7 @@ async def test_slot_released_when_consumer_vanishes(sm, no_meta, monkeypatch):
     """Defense in depth: consumer vanishes without aclose; the reader's put must
     not block forever."""
     monkeypatch.setattr(app_module, "STREAM_PUT_TIMEOUT", 0.2)
-    g = (0, 0)
+    g = (0, "model", 0)
     lock = await _acquire(sm, g)
     chunks = [b"c%d" % i for i in range(64)]
     resp = FakeResp(chunks, delay=0.005)
@@ -137,7 +137,7 @@ async def test_slot_released_when_consumer_vanishes(sm, no_meta, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_backend_error_mid_stream_releases_slot(sm, no_meta):
-    g = (0, 0)
+    g = (0, "model", 0)
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b", b"c"], delay=0.005, fail_after=2)
 
@@ -160,7 +160,7 @@ async def test_small_stream_does_not_save_cache(sm, monkeypatch):
 
     write_meta_async = AsyncMock()
     monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
-    g = (0, 0)
+    g = (0, "model", 0)
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
@@ -182,7 +182,7 @@ async def test_big_stream_saves_cache(sm, monkeypatch):
 
     write_meta_async = AsyncMock()
     monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
-    g = (0, 0)
+    g = (0, "model", 0)
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
@@ -205,7 +205,7 @@ async def test_partial_stream_does_not_save_cache(sm, monkeypatch):
 
     write_meta_async = AsyncMock()
     monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
-    g = (0, 0)
+    g = (0, "model", 0)
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b", b"c"], delay=0.005, fail_after=2)
 
@@ -226,7 +226,7 @@ async def test_meta_written_when_save_succeeds(sm, monkeypatch):
 
     write_meta_async = AsyncMock()
     monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
-    g = (0, 0)
+    g = (0, "model", 0)
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
@@ -249,7 +249,7 @@ async def test_meta_not_written_when_save_fails(sm, monkeypatch):
     write_meta_async = AsyncMock()
     monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
     sm.backends[0]["client"].save_slot = AsyncMock(return_value=False)
-    g = (0, 0)
+    g = (0, "model", 0)
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
@@ -267,7 +267,7 @@ async def test_meta_not_written_when_save_fails(sm, monkeypatch):
 async def test_reader_task_kept_alive_until_done(sm, no_meta):
     """The reader task must be tracked with a strong reference until it completes
     (otherwise the event loop's weak refs allow GC mid-execution)."""
-    g = (0, 0)
+    g = (0, "model", 0)
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b"], delay=0.01)
 

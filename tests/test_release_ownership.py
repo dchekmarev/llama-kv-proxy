@@ -32,6 +32,7 @@ def sm(monkeypatch):
     client.save_slot = AsyncMock(return_value=True)
     client.restore_slot = AsyncMock(return_value=True)
     client.get_model_id_cached = AsyncMock(return_value="m1")
+    client.get_loaded_model = AsyncMock(return_value="m1")
     client.chat_completions = AsyncMock(return_value={"choices": []})
     manager.set_clients([client])
     return manager

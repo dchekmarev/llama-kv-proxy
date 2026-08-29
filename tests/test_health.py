@@ -57,7 +57,7 @@ async def test_health_endpoint_mixed_backends(sm):
     bad.health = AsyncMock(
         return_value={"url": "http://be2", "ok": False, "model_id": None}
     )
-    sm.set_backend_slots(0, [{"id": 0, "state": "busy"}])
+    sm.set_backend_slots(0, "m1", [{"id": 0, "state": "busy"}])
     app_module.app.state.sm = sm
     app_module.app.state.clients = [good, bad]
 
