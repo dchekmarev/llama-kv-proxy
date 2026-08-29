@@ -114,3 +114,59 @@ def test_clear_bin_cache(bin_dir):
 
 def test_clear_bin_cache_disabled_when_dir_empty():
     assert bin_cache.clear_bin_cache("") == 0
+
+
+def test_reconcile_disabled_when_dir_empty(meta_dir):
+    assert bin_cache.reconcile_bin_cache("") == {
+        "deleted_metas": [],
+        "deleted_bins": [],
+    }
+
+
+def test_reconcile_noop_when_consistent(bin_dir, meta_dir):
+    now = time.time()
+    _make_bin(bin_dir, "a", 100)
+    _make_meta(meta_dir, "a", now)
+    res = bin_cache.reconcile_bin_cache(str(bin_dir))
+    assert res == {"deleted_metas": [], "deleted_bins": []}
+    assert os.path.exists(os.path.join(str(bin_dir), "a"))
+    assert os.path.exists(os.path.join(str(meta_dir), "a.meta.json"))
+
+
+def test_reconcile_deletes_stale_meta(bin_dir, meta_dir):
+    now = time.time()
+    # Meta with no matching .bin -> stale, delete the meta.
+    _make_meta(meta_dir, "stale", now)
+    res = bin_cache.reconcile_bin_cache(str(bin_dir))
+    assert res["deleted_metas"] == ["stale"]
+    assert res["deleted_bins"] == []
+    assert not os.path.exists(os.path.join(str(meta_dir), "stale.meta.json"))
+
+
+def test_reconcile_deletes_orphan_bin(bin_dir, meta_dir):
+    # .bin with no matching meta -> orphan, delete the .bin.
+    _make_bin(bin_dir, "orphan", 100)
+    res = bin_cache.reconcile_bin_cache(str(bin_dir))
+    assert res["deleted_bins"] == ["orphan"]
+    assert res["deleted_metas"] == []
+    assert not os.path.exists(os.path.join(str(bin_dir), "orphan"))
+
+
+def test_reconcile_both_directions(bin_dir, meta_dir):
+    now = time.time()
+    # Consistent pair (kept).
+    _make_bin(bin_dir, "ok", 100)
+    _make_meta(meta_dir, "ok", now)
+    # Stale meta (no .bin).
+    _make_meta(meta_dir, "stale", now)
+    # Orphan .bin (no meta).
+    _make_bin(bin_dir, "orphan", 100)
+
+    res = bin_cache.reconcile_bin_cache(str(bin_dir))
+
+    assert res["deleted_metas"] == ["stale"]
+    assert res["deleted_bins"] == ["orphan"]
+    assert os.path.exists(os.path.join(str(bin_dir), "ok"))
+    assert os.path.exists(os.path.join(str(meta_dir), "ok.meta.json"))
+    assert not os.path.exists(os.path.join(str(meta_dir), "stale.meta.json"))
+    assert not os.path.exists(os.path.join(str(bin_dir), "orphan"))

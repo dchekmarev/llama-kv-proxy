@@ -112,6 +112,9 @@ BIN_CACHE_DIR = os.getenv("BIN_CACHE_DIR", "")
 BIN_CACHE_MAX_MB = int(os.getenv("BIN_CACHE_MAX_MB", "0"))
 # Interval (seconds) between .bin LRU cleanup runs.
 BIN_CACHE_INTERVAL_S = float(os.getenv("BIN_CACHE_INTERVAL_S", str(EVICT_INTERVAL_S)))
+# Interval (seconds) between meta/.bin reconciliations (both directions:
+# stale metas without a .bin, orphan .bin without a meta). 0 disables it.
+BIN_RECONCILE_INTERVAL_S = float(os.getenv("BIN_RECONCILE_INTERVAL_S", "600"))
 
 # Service port
 PORT = int(os.getenv("PORT", "8081"))

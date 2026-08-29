@@ -129,3 +129,60 @@ def clear_bin_cache(dir: str) -> int:
             log.warning("bin_cache_clear_fail %s: %s", path, e)
     log.info("bin_cache_clear deleted=%d", deleted)
     return deleted
+
+
+def reconcile_bin_cache(dir: str) -> dict:
+    """Reconcile meta files and .bin files in both directions.
+
+    - A meta without a matching .bin is stale (the backend cache is gone):
+      delete the meta.
+    - A .bin without a matching meta is orphaned (no proxy record): delete
+      the .bin.
+
+    Returns {"deleted_metas": [...], "deleted_bins": [...]}.
+    """
+    if not dir or not os.path.isdir(dir):
+        return {"deleted_metas": [], "deleted_bins": []}
+
+    bin_basenames = {
+        os.path.basename(p)
+        for p in glob.glob(os.path.join(dir, "*"))
+        if os.path.isfile(p)
+    }
+    meta_basenames = {
+        os.path.basename(p)[: -len(".meta.json")]
+        for p in glob.glob(os.path.join(META_DIR, "*.meta.json"))
+        if os.path.isfile(p)
+    }
+
+    deleted_metas: list[str] = []
+    for basename in sorted(meta_basenames - bin_basenames):
+        meta_path = os.path.join(META_DIR, f"{basename}.meta.json")
+        try:
+            os.remove(meta_path)
+            deleted_metas.append(basename)
+            log.info("bin_reconcile_deleted_meta %s.meta.json (no .bin)", basename)
+        except OSError as e:
+            log.warning("bin_reconcile_meta_fail %s: %s", meta_path, e)
+
+    deleted_bins: list[str] = []
+    for basename in sorted(bin_basenames - meta_basenames):
+        bin_path = os.path.join(dir, basename)
+        try:
+            size = os.path.getsize(bin_path)
+            os.remove(bin_path)
+            deleted_bins.append(basename)
+            log.info(
+                "bin_reconcile_deleted_bin file=%s size_mb=%.1f (no meta)",
+                basename,
+                size / 1024 / 1024,
+            )
+        except OSError as e:
+            log.warning("bin_reconcile_bin_fail %s: %s", bin_path, e)
+
+    log.info(
+        "bin_reconcile deleted_metas=%d deleted_bins=%d",
+        len(deleted_metas),
+        len(deleted_bins),
+    )
+    return {"deleted_metas": deleted_metas, "deleted_bins": deleted_bins}
