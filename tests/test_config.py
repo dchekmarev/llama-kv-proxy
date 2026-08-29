@@ -62,6 +62,13 @@ def test_validate_accepts_valid():
     config.validate_backends([{"url": "http://be", "n_slots": 2}])
 
 
+def test_bin_cache_config_attrs_exist():
+    """The .bin cleanup config values are loaded with the right types."""
+    assert isinstance(config.BIN_CACHE_DIR, str)
+    assert isinstance(config.BIN_CACHE_MAX_MB, int)
+    assert isinstance(config.BIN_CACHE_INTERVAL_S, float)
+
+
 def test_meta_dir_is_absolute_and_in_app_dir():
     """META_DIR must not depend on the process cwd."""
     assert os.path.isabs(config.META_DIR), (

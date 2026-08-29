@@ -19,6 +19,8 @@ llama.cpp provides “slots,” each holding a conversation’s KV cache so repe
 
 llama.cpp’s HTTP server exposes slot save/restore; saving writes a cache file to the directory provided by --slot‑save‑path, and restore loads by file basename (e.g., slotcache_`<key>`.bin), which is exactly how this proxy persists and revives caches across requests and restarts. The proxy keeps small local .meta files describing cached prefixes for fast lookup, while llama.cpp owns the actual KV .bin files under --slot‑save‑path for correctness and performance.
 
+> **Note on .bin cleanup:** llama.cpp intentionally has no endpoint to delete files from `--slot-save-path` (the `erase` slot action only clears in-memory state; save/restore only write/read), so .bin files accumulate unless removed. To bound them, mount the host `--slot-save-path` into the proxy and set `BIN_CACHE_DIR` to the mounted path plus a `BIN_CACHE_MAX_MB` size cap. The proxy then deletes .bin files directly: on meta eviction/clear (by key) and periodically by LRU (oldest last‑use first, where last‑use = the meta timestamp, refreshed on both save and store). Orphaned .bin files (no matching .meta) are removed first.
+
 ### Request forwarding
 
 The proxy forwards the client's request body to the backend verbatim (pass-through) and injects the following fields:

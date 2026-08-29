@@ -190,3 +190,32 @@ async def test_cache_stats_endpoint(sm, meta_dir, counters):
 
     assert stats["files"] == 1
     assert stats["total_bytes"] > 0
+
+
+async def test_purge_deletes_bin_file_directly(sm, tmp_path, monkeypatch):
+    """When BIN_CACHE_DIR is set, the .bin file is removed from disk too."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    bin_file = bin_dir / "abc"
+    bin_file.write_bytes(b"x" * 100)
+    monkeypatch.setattr(app_module, "BIN_CACHE_DIR", str(bin_dir))
+
+    client = sm.backends[0]["client"]
+    await app_module._purge_backend_files([client], [("abc", "m1")])
+
+    assert not bin_file.exists()
+    assert client.delete_cache_file.await_count == 1
+
+
+async def test_cache_clear_removes_orphan_bin_files(sm, meta_dir, tmp_path, monkeypatch):
+    """/cache/clear also removes orphaned .bin files from the mounted dir."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "orphan").write_bytes(b"x" * 100)
+    monkeypatch.setattr(app_module, "BIN_CACHE_DIR", str(bin_dir))
+    app_module.app.state.sm = sm
+    app_module.app.state.clients = [sm.backends[0]["client"]]
+
+    await app_module.cache_clear()
+
+    assert not (bin_dir / "orphan").exists()

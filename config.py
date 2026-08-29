@@ -104,6 +104,15 @@ META_MAX_FILES = int(os.getenv("META_MAX_FILES", "1000"))
 META_MAX_MB = int(os.getenv("META_MAX_MB", "512"))
 EVICT_INTERVAL_S = float(os.getenv("EVICT_INTERVAL_S", "3600"))
 
+# Backend .bin cache directory (mounted from the host --slot-save-path).
+# Empty disables direct .bin cleanup.
+BIN_CACHE_DIR = os.getenv("BIN_CACHE_DIR", "")
+# Max total size (MB) of .bin files; oldest (LRU) are deleted first.
+# 0 disables the size cap.
+BIN_CACHE_MAX_MB = int(os.getenv("BIN_CACHE_MAX_MB", "0"))
+# Interval (seconds) between .bin LRU cleanup runs.
+BIN_CACHE_INTERVAL_S = float(os.getenv("BIN_CACHE_INTERVAL_S", str(EVICT_INTERVAL_S)))
+
 # Service port
 PORT = int(os.getenv("PORT", "8081"))
 
