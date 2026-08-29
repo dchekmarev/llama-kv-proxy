@@ -94,6 +94,13 @@ MODEL_ID_TTL = float(os.getenv("MODEL_ID_TTL", "60"))
 MODEL_ID_TIMEOUT = float(os.getenv("MODEL_ID_TIMEOUT", "5"))
 UNKNOWN_MODEL_ID_RETRY = float(os.getenv("UNKNOWN_MODEL_ID_RETRY", "5"))
 
+# Cache eviction: TTL (hours), file count cap, total size cap (MB),
+# and the interval (seconds) between periodic eviction runs.
+META_TTL_H = float(os.getenv("META_TTL_H", "24"))
+META_MAX_FILES = int(os.getenv("META_MAX_FILES", "1000"))
+META_MAX_MB = int(os.getenv("META_MAX_MB", "512"))
+EVICT_INTERVAL_S = float(os.getenv("EVICT_INTERVAL_S", "3600"))
+
 # Service port
 PORT = int(os.getenv("PORT", "8081"))
 

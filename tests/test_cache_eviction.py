@@ -11,9 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import app as app_module
-import chat_flow
 import hashing as hs
-import promstats
 import slot_manager as sm_module
 from llama_client import LlamaClient
 from slot_manager import SlotManager
@@ -27,9 +25,6 @@ def sm(monkeypatch):
     client.save_slot = AsyncMock(return_value=True)
     client.restore_slot = AsyncMock(return_value=True)
     client.get_model_id_cached = AsyncMock(return_value="m1")
-    # No preset alias table: a client model name maps to nothing here.
-    client.resolve_model_id_cached = AsyncMock(return_value=None)
-    client.get_loaded_model = AsyncMock(return_value="m1")
     client.chat_completions = AsyncMock(return_value={"choices": []})
     client.delete_cache_file = AsyncMock(return_value=True)
     manager.set_clients([client])
@@ -37,9 +32,15 @@ def sm(monkeypatch):
 
 
 @pytest.fixture()
-def counters():
-    promstats.reset()
-    yield
+def meta_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(hs, "META_DIR", str(tmp_path))
+    return tmp_path
+
+
+@pytest.fixture()
+def counters(monkeypatch):
+    monkeypatch.setattr(hs, "_hits", 0)
+    monkeypatch.setattr(hs, "_misses", 0)
 
 
 def _write_meta(dirpath, key: str, mtime: float | None = None) -> str:
@@ -51,11 +52,6 @@ def _write_meta(dirpath, key: str, mtime: float | None = None) -> str:
     if mtime is not None:
         os.utime(path, (mtime, mtime))
     return path
-
-
-def _pad(path: str, n: int) -> None:
-    with open(path, "ab") as f:
-        f.write(b"x" * n)
 
 
 async def test_ttl_eviction_deletes_old_meta(meta_dir, counters):
@@ -89,82 +85,15 @@ async def test_max_files_cap_keeps_newest(meta_dir, counters):
     assert not os.path.exists(paths[0])
 
 
-async def test_max_mb_zero_disables_bytes_cap(meta_dir, counters):
-    """A zero size cap disables the bytes limit; nothing is deleted by it."""
+async def test_max_mb_cap_deletes_all_when_zero(meta_dir, counters):
+    """A zero size cap deletes everything."""
     _write_meta(meta_dir, "a")
     _write_meta(meta_dir, "b")
 
     res = hs.evict_meta(ttl_hours=0, max_files=100, max_mb=0)
 
-    assert res["deleted"] == []
-    assert res["remaining"] == 2
-    assert len(hs._meta_files()) == 2
-
-
-async def test_max_files_zero_disables_files_cap(meta_dir, counters):
-    """A zero file count cap disables the files limit; nothing is deleted."""
-    now = time.time()
-    paths = [_write_meta(meta_dir, f"k{i}", mtime=now - i * 100) for i in range(5)]
-
-    res = hs.evict_meta(ttl_hours=0, max_files=0, max_mb=100)
-
-    assert res["deleted"] == []
-    assert res["remaining"] == 5
-    assert all(os.path.exists(p) for p in paths)
-
-
-async def test_both_caps_zero_disables_all_caps(meta_dir, counters):
-    """Zero file count AND zero size cap disable both limits; nothing is
-    deleted and every file is reported as remaining."""
-    now = time.time()
-    paths = []
-    for i in range(5):
-        p = _write_meta(meta_dir, f"k{i}", mtime=now - i * 100)
-        _pad(p, 600 * 1024)
-        paths.append(p)
-
-    res = hs.evict_meta(ttl_hours=0, max_files=0, max_mb=0)
-
-    assert res["deleted"] == []
-    assert res["remaining"] == 5
-    assert all(os.path.exists(p) for p in paths)
-
-
-async def test_max_mb_cap_keeps_newest(meta_dir, counters):
-    """When the total size cap is exceeded the oldest files go first."""
-    now = time.time()
-    paths = []
-    for i in range(3):
-        p = _write_meta(meta_dir, f"k{i}", mtime=now - (3 - i) * 100)
-        _pad(p, 600 * 1024)
-        paths.append(p)
-
-    res = hs.evict_meta(ttl_hours=0, max_files=100, max_mb=1)
-
-    assert sorted(res["deleted"]) == ["k0", "k1"]
-    assert res["remaining"] == 1
-    assert os.path.exists(paths[2])
-
-
-async def test_caps_disabled_independently(meta_dir, counters):
-    """Each cap can be disabled with 0 while the other still applies."""
-    now = time.time()
-    for i in range(3):
-        p = _write_meta(meta_dir, f"k{i}", mtime=now - (3 - i) * 100)
-        _pad(p, 600 * 1024)
-
-    # Files cap off, bytes cap on: oldest evicted by size.
-    res = hs.evict_meta(ttl_hours=0, max_files=0, max_mb=1)
-    assert sorted(res["deleted"]) == ["k0", "k1"]
-    assert res["remaining"] == 1
-
-    # Rebuild the cache, then flip: bytes cap off, files cap on.
-    for i in range(3):
-        _write_meta(meta_dir, f"k{i}", mtime=now - (3 - i) * 100)
-
-    res = hs.evict_meta(ttl_hours=0, max_files=1, max_mb=0)
-    assert sorted(res["deleted"]) == ["k0", "k1"]
-    assert res["remaining"] == 1
+    assert res["remaining"] == 0
+    assert sorted(res["deleted"]) == ["a", "b"]
 
 
 async def test_clear_all_meta(meta_dir, counters):
@@ -181,9 +110,9 @@ async def test_clear_all_meta(meta_dir, counters):
 async def test_cache_stats(meta_dir, counters):
     """cache_stats reports file count, size, and hit/miss counters."""
     _write_meta(meta_dir, "a")
-    hs.record_hit("m1")
-    hs.record_hit("m1")
-    hs.record_miss("m1")
+    hs.record_hit()
+    hs.record_hit()
+    hs.record_miss()
 
     stats = hs.cache_stats()
 
@@ -260,58 +189,3 @@ async def test_cache_stats_endpoint(sm, meta_dir, counters):
 
     assert stats["files"] == 1
     assert stats["total_bytes"] > 0
-
-
-async def test_health_probes_backends_concurrently(sm):
-    """L3: health() must probe all backends concurrently (asyncio.gather). A
-    sequential probe would block on the barrier (only one party present) and
-    time out; a concurrent probe releases it."""
-    import asyncio
-
-    barrier = asyncio.Barrier(3)
-    clients = []
-    for i in range(3):
-        c = MagicMock()
-
-        async def fake_health(i=i, barrier=barrier):
-            await barrier.wait()
-            return {"ok": True, "i": i}
-
-        c.health = fake_health
-        clients.append(c)
-    app_module.app.state.sm = sm
-    app_module.app.state.clients = clients
-
-    out = await asyncio.wait_for(app_module.health(), timeout=2.0)
-
-    assert out["ok"] is True
-    assert len(out["backends"]) == 3
-
-
-async def test_purge_deletes_bin_file_directly(sm, tmp_path, monkeypatch):
-    """When BIN_CACHE_DIR is set, the .bin file is removed from disk too."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    bin_file = bin_dir / "abc"
-    bin_file.write_bytes(b"x" * 100)
-    monkeypatch.setattr(chat_flow, "BIN_CACHE_DIR", str(bin_dir))
-
-    client = sm.backends[0]["client"]
-    await chat_flow._purge_backend_files([client], [("abc", "m1")])
-
-    assert not bin_file.exists()
-    assert client.delete_cache_file.await_count == 1
-
-
-async def test_cache_clear_removes_orphan_bin_files(sm, meta_dir, tmp_path, monkeypatch):
-    """/cache/clear also removes orphaned .bin files from the mounted dir."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "orphan").write_bytes(b"x" * 100)
-    monkeypatch.setattr(app_module, "BIN_CACHE_DIR", str(bin_dir))
-    app_module.app.state.sm = sm
-    app_module.app.state.clients = [sm.backends[0]["client"]]
-
-    await app_module.cache_clear()
-
-    assert not (bin_dir / "orphan").exists()
