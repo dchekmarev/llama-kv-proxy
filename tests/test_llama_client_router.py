@@ -133,6 +133,25 @@ async def test_restore_slot_other_error_is_false():
     assert await c.restore_slot(0, "abc") is False
 
 
+@pytest.mark.asyncio
+async def test_erase_slot_sends_erase_action():
+    """erase_slot clears a slot's KV via action=erase, routing by model."""
+    c = make_client()
+    c.client.post = AsyncMock(return_value=resp(200, {}))
+    assert await c.erase_slot(3, model="m1") is True
+    assert c.client.post.call_args.args[0] == "/slots/3"
+    assert c.client.post.call_args.kwargs.get("params") == {"action": "erase"}
+    assert c.client.post.call_args.kwargs.get("json") == {"model": "m1"}
+
+
+@pytest.mark.asyncio
+async def test_erase_slot_failure_does_not_raise():
+    """A failing erase is best-effort: returns False, never raises."""
+    c = make_client()
+    c.client.post = AsyncMock(side_effect=Exception("boom"))
+    assert await c.erase_slot(3) is False
+
+
 # --- delete_cache_file -----------------------------------------------------
 
 

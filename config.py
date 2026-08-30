@@ -121,6 +121,13 @@ BIN_RECONCILE_INTERVAL_S = float(os.getenv("BIN_RECONCILE_INTERVAL_S", "600"))
 # a just-saved .bin is not deleted before its meta lands. 0 disables the guard.
 BIN_SAVE_GRACE_S = float(os.getenv("BIN_SAVE_GRACE_S", "10"))
 
+# Clear a slot's in-memory KV cache (action=erase) before dispatching a small
+# (non-cached) request, so it does not start on top of another conversation's
+# stale KV. Some llama.cpp builds auto-clear on a prompt mismatch, in which
+# case this is redundant; verify against the target build before relying on it.
+# Off by default (no behavior change until verified).
+ERASE_BEFORE_SMALL = os.getenv("ERASE_BEFORE_SMALL", "0") == "1"
+
 # Service port
 PORT = int(os.getenv("PORT", "8081"))
 
