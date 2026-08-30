@@ -11,6 +11,8 @@ import json
 import logging
 import os
 
+from request_id import RequestIdFilter
+
 
 def parse_backends_env(raw: str | None) -> list[dict]:
     """Parse the BACKENDS env var (JSON list) or fall back to LLAMA_URL/N_SLOTS.
@@ -178,13 +180,17 @@ def setup_logging(level: str = "INFO") -> None:
 
     Called from the entry point and app startup so logging is set up
     regardless of launch mode (python llama_kv_proxy.py or uvicorn app:app).
-    Importing config no longer configures logging as a side effect.
+    Importing config no longer configures logging as a side effect. The
+    request-id filter is attached to the root handlers so every record carries
+    the current request's correlation id (empty outside a request).
     """
     root = logging.getLogger()
     if getattr(root, "_llama_kv_proxy_configured", False):
         return
     logging.basicConfig(
         level=level.upper(),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format="%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s",
     )
+    for handler in root.handlers:
+        handler.addFilter(RequestIdFilter())
     root._llama_kv_proxy_configured = True
