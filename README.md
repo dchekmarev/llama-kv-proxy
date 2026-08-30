@@ -2,6 +2,10 @@
 
 # llama-kv-proxy
 
+[![CI](https://github.com/dchekmarev/llama-kv-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/dchekmarev/llama-kv-proxy/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![Version](https://img.shields.io/badge/version-0.0.1)](./version.py)
+
 A proxy in front of llama.cpp that makes long-context chat and IDE workflows faster: it manages llama.cpp slots, reuses cached KV context, and restores saved caches from disk when needed. It speaks the OpenAI-compatible Chat Completions API (streaming SSE and non-streaming), so existing clients can connect without changes.
 
 ## Why it's needed
@@ -90,7 +94,19 @@ python3 llama_kv_proxy.py  # or: uvicorn app:app --host 0.0.0.0 --port 8081
 
 Run the proxy with a **single worker** (the default). The slot manager keeps per-process state (locks, LRU marks); multiple workers would each track slots independently and could route two requests to the same slot.
 
-Your clients should call the proxy's `/v1/chat/completions` endpoint; the proxy handles matching, slot selection, save/restore, and streaming vs non-streaming automatically.
+Your clients should call the proxy's `/v1/chat/completions` endpoint; the proxy handles matching, slot selection, save/restore, and streaming vs non-streaming automatically:
+
+```bash
+# Non-streaming
+curl http://localhost:8081/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"messages": [{"role": "user", "content": "Hello!"}]}'
+
+# Streaming (SSE)
+curl -N http://localhost:8081/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"messages": [{"role": "user", "content": "Hello!"}], "stream": true}'
+```
 
 If you run into issues using gpt-oss-20b with an IDE like Cline, follow these instructions: https://www.reddit.com/r/CLine/comments/1mtcj2v/making_gptoss_20b_and_cline_work_together/
 
@@ -162,6 +178,7 @@ All parameters are environment variables; defaults in parentheses.
 |---|---|---|
 | POST | `/v1/chat/completions` | OpenAI-compatible chat endpoint (stream and non-stream). |
 | GET | `/v1/models` | Backend model list (proxied from the first backend); falls back to `MODEL_ID` when the backend is unavailable. |
+| GET | `/version` | Proxy name and version (single source of truth: `version.py`). |
 | GET | `/proxy/slots` | Aggregated slot state across all backends (state, n_ctx, total_tokens, LRU mark). |
 | GET | `/proxy/health` | Backend availability probe plus slot state. |
 | GET | `/cache/stats` | Cache file count, total size, hit/miss counters. |
@@ -181,15 +198,22 @@ All parameters are environment variables; defaults in parentheses.
 | `hashing.py` | Prefix/block hashing, meta files, two-tier matching, eviction |
 | `bin_cache.py` | Direct `.bin` cleanup, LRU size cap, meta/.bin reconciliation |
 | `metrics.py` | Prometheus aggregation across backends/models |
+| `request_id.py` | Per-request correlation id (ContextVar + log filter) |
+| `version.py` | Single source of truth for the proxy version |
 | `tests/` | pytest suite |
 
-## Tests
+## Development
 
 ```bash
-pip install -r requirements-dev.txt
-python3 -m pytest tests/ -q
-ruff check .
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
+pip install ruff pytest
+
+python3 -m pytest tests/ -q   # run the test suite
+ruff check .                  # lint
 ```
+
+CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull request.
 
 ## Limitations & caveats
 
@@ -202,3 +226,7 @@ ruff check .
 ## Acknowledgments / Inspiration
 
 This project was inspired by and initially built upon concepts from [airnsk/proxycache](https://github.com/airnsk/proxycache).
+
+## License
+
+MIT — see [LICENSE](./LICENSE).

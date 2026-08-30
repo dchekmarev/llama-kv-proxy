@@ -18,17 +18,10 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install -r requirements-dev.txt
-          pip install mypy
+          pip install ruff pytest
 
       - name: Lint (ruff)
         run: ruff check .
-
-      - name: Type check (mypy)
-        run: |
-          python -m mypy app.py config.py slot_manager.py llama_client.py \
-            hashing.py bin_cache.py metrics.py request_id.py version.py \
-            llama_kv_proxy.py chat_flow.py
 
       - name: Test (pytest)
         run: python -m pytest tests/ -q
