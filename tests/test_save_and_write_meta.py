@@ -74,3 +74,63 @@ async def test_keeps_subsumed_metas_when_meta_write_fails(meta_dir, monkeypatch)
     assert ok is True, "the slot save itself succeeded"
     assert (meta_dir / "h_ab.meta.json").exists(), "subsumed meta must be kept"
     assert not (meta_dir / "h_abc.meta.json").exists(), "failed meta must not exist"
+
+
+@pytest.mark.asyncio
+async def test_passes_saved_hashes_and_deletes_request_hashes(meta_dir, monkeypatch):
+    """The meta is written with response-extended hashes, while subsumed
+    deletion still uses the incoming request prompt hashes."""
+    write_mock = AsyncMock()
+    delete_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(hs, "write_meta_async", write_mock)
+    monkeypatch.setattr(hs, "delete_subsumed_metas_async", delete_mock)
+    monkeypatch.setattr(app_module, "_schedule_lru_check", lambda: None)
+    monkeypatch.setattr(app_module, "_purge_backend_files", AsyncMock())
+    monkeypatch.setattr(bin_cache, "get_bin_size", lambda d, k: None)
+
+    ok = await app_module._save_and_write_meta(
+        [],
+        _sm(),
+        ("g",),
+        "key",
+        "saved_prefix",
+        ["sb"],
+        ["req_h"],
+        "m1",
+        saved_prefix_hashes=["saved_h"],
+    )
+
+    assert ok is True
+    write_mock.assert_awaited_once()
+    args = write_mock.await_args.args
+    assert args == (
+        "key",
+        "saved_prefix",
+        ["sb"],
+        hs.WORDS_PER_BLOCK,
+        "m1",
+        ["req_h"],
+        None,
+        ["saved_h"],
+    )
+    delete_mock.assert_awaited_once_with("key", ["req_h"], "m1")
+
+
+@pytest.mark.asyncio
+async def test_falls_back_to_prompt_hashes_when_saved_missing(meta_dir, monkeypatch):
+    write_mock = AsyncMock()
+    delete_mock = AsyncMock(return_value=[])
+    monkeypatch.setattr(hs, "write_meta_async", write_mock)
+    monkeypatch.setattr(hs, "delete_subsumed_metas_async", delete_mock)
+    monkeypatch.setattr(app_module, "_schedule_lru_check", lambda: None)
+    monkeypatch.setattr(app_module, "_purge_backend_files", AsyncMock())
+    monkeypatch.setattr(bin_cache, "get_bin_size", lambda d, k: None)
+
+    ok = await app_module._save_and_write_meta(
+        [], _sm(), ("g",), "key", "p", ["b"], ["req_h"], "m1"
+    )
+
+    assert ok is True
+    args = write_mock.await_args.args
+    assert args[7] == ["req_h"]
+    delete_mock.assert_awaited_once_with("key", ["req_h"], "m1")

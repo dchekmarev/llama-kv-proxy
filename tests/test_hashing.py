@@ -119,3 +119,38 @@ def test_write_meta_stores_prefix_bytes(meta_dir):
         meta = json.load(f)
     assert meta["prefix_len"] == 4
     assert meta["prefix_bytes"] == len("你好世界".encode())
+
+
+def test_write_meta_stores_saved_prefix_hashes(meta_dir):
+    key = "a" * 64
+    hs.write_meta(
+        key,
+        "p",
+        ["b"],
+        100,
+        "m1",
+        prefix_hashes=["h_prompt"],
+        saved_prefix_hashes=["h_prompt", "h_response"],
+    )
+    path = os.path.join(str(meta_dir), f"{key}.meta.json")
+    with open(path, encoding="utf-8") as f:
+        meta = json.load(f)
+    assert meta["prefix_hashes"] == ["h_prompt"]
+    assert meta["saved_prefix_hashes"] == ["h_prompt", "h_response"]
+
+
+def test_saved_conversation_values_appends_assistant_response():
+    messages = [{"role": "user", "content": "a"}]
+    prefix, blocks, hashes = hs.saved_conversation_values(messages, "b", "m1", 100)
+    expected = messages + [{"role": "assistant", "content": "b"}]
+    assert prefix == hs.raw_prefix(expected)
+    assert blocks == hs.block_hashes_from_text(prefix, 100)
+    assert hashes == hs.prefix_hashes_from_messages(expected, "m1")
+
+
+def test_saved_conversation_values_empty_response_keeps_prompt():
+    messages = [{"role": "user", "content": "a"}]
+    prefix, blocks, hashes = hs.saved_conversation_values(messages, "", "m1", 100)
+    assert prefix == hs.raw_prefix(messages)
+    assert blocks == hs.block_hashes_from_text(prefix, 100)
+    assert hashes == hs.prefix_hashes_from_messages(messages, "m1")

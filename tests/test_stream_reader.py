@@ -284,3 +284,27 @@ async def test_reader_task_kept_alive_until_done(sm, no_meta):
 
     assert len(tasks) == 0, "completed reader tasks must be untracked"
     assert not lock.locked(), "slot must be released after tracked task completes"
+
+
+@pytest.mark.asyncio
+async def test_put_timeout_does_not_save_partial_stream(sm, monkeypatch):
+    """A queue put timeout means the stream was not read to the end: the
+    partial KV cache must not be saved."""
+    import hashing
+
+    write_meta_async = AsyncMock()
+    monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
+    monkeypatch.setattr(app_module, "STREAM_PUT_TIMEOUT", 0.1)
+    g = (0, "model", 0)
+    lock = await _acquire(sm, g)
+    chunks = [b"c%d" % i for i in range(64)]
+    resp = FakeResp(chunks, delay=0.005)
+
+    _ = await app_module.start_stream_task(
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+    )
+    await _pump(1.0)
+
+    assert not lock.locked(), "slot must be released when the consumer vanished"
+    assert resp.closed
+    write_meta_async.assert_not_awaited()
