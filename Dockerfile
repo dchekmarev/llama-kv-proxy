@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+# Keep in sync with version.py (the single source of truth).
+ARG VERSION=0.0.1
+LABEL version=${VERSION}
+
 WORKDIR /app
 
 COPY requirements.txt .
