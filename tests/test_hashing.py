@@ -5,6 +5,9 @@ covered by the cache (lcp / len(req_blocks)), not by the fraction of the
 shorter sequence — otherwise a short fully-matching candidate (old ratio 1.0)
 always evicts a longer, more useful one."""
 
+import glob
+import os
+
 import pytest
 
 import hashing as hs
@@ -70,3 +73,18 @@ def test_empty_request_returns_none(meta_dir):
     cand = hs.find_best_restore_candidate([], [], 100, 0.6, "m1")
 
     assert cand is None
+
+
+def test_scan_all_meta_skips_files_deleted_during_scan(meta_dir, monkeypatch):
+    """H2: a meta file removed between glob and getmtime must not crash the
+    scan — the surviving files are still returned, the vanished one is skipped."""
+    _write("real", _blocks(3))
+    real_files = glob.glob(os.path.join(str(meta_dir), "*.meta.json"))
+    phantom = os.path.join(str(meta_dir), "phantom.meta.json")
+    monkeypatch.setattr(hs.glob, "glob", lambda pattern: real_files + [phantom])
+
+    metas = hs.scan_all_meta()
+
+    keys = {m.get("key") for m in metas}
+    assert "real" in keys
+    assert "phantom" not in keys
