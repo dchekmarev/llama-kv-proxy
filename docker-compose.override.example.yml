@@ -9,7 +9,7 @@ services:
     volumes:
       # Mount the host --slot-save-path so the proxy can delete .bin files
       # directly (llama.cpp has no disk-delete endpoint).
-      - /tmp/llama-slot:/bin_cache
+      - /var/lib/llama-slots:/bin_cache
     environment:
       # n_slots is only a bootstrap hint, not functional: the proxy discovers
       # the real per-model slots via GET /slots?model=X. The router preset
