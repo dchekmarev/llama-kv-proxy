@@ -95,6 +95,32 @@ async def test_passthrough_forwards_body_and_headers():
 
 
 @pytest.mark.asyncio
+async def test_passthrough_strips_hop_by_hop_headers():
+    """L4: length/hop-by-hop headers are not forwarded — httpx recomputes
+    content-length and framing, so a stale client value would conflict."""
+    client, _, _ = _mock_client([b"ok"])
+    _setup([client])
+    headers = [
+        ("host", "test"),
+        ("content-length", "100"),
+        ("transfer-encoding", "chunked"),
+        ("connection", "keep-alive"),
+        ("content-type", "application/json"),
+        ("x-custom", "42"),
+    ]
+
+    await _passthrough("tokenize", method="POST", body=b'{"content":"hi"}', headers=headers)
+
+    fwd = {k.lower() for k in client.client.build_request.call_args.kwargs["headers"]}
+    assert "content-length" not in fwd
+    assert "transfer-encoding" not in fwd
+    assert "connection" not in fwd
+    assert "host" not in fwd
+    assert "content-type" in fwd
+    assert "x-custom" in fwd
+
+
+@pytest.mark.asyncio
 async def test_passthrough_starlette_style_headers():
     """Production shape: request.headers is a mapping iterating keys only."""
     client, _, _ = _mock_client([b"ok"])
