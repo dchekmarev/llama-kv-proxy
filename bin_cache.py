@@ -108,6 +108,20 @@ def delete_bin_file(dir: str, basename: str) -> bool:
         return False
 
 
+def get_bin_size(dir: str, key: str) -> int | None:
+    """Size in bytes of the backend .bin file <dir>/<key>, or None.
+
+    Returns None when the file or directory is missing (e.g. the .bin cache
+    dir is not mounted), so callers can fall back to another size estimate.
+    """
+    if not dir:
+        return None
+    try:
+        return os.path.getsize(os.path.join(dir, key))
+    except OSError:
+        return None
+
+
 def clear_bin_cache(dir: str) -> int:
     """Delete every .bin file in dir (tracked and orphaned). Returns count."""
     if not dir or not os.path.isdir(dir):

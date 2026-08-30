@@ -31,7 +31,7 @@ def test_long_partial_candidate_beats_short_full_candidate(meta_dir):
     _write("short", req[:1])
     _write("long", req[:50])
 
-    cand = hs.find_best_restore_candidate(req, 100, 0.005, "m1")
+    cand = hs.find_best_restore_candidate([], req, 100, 0.005, "m1")
 
     assert cand is not None
     key, ratio = cand
@@ -44,7 +44,7 @@ def test_short_full_candidate_rejected_at_default_threshold(meta_dir):
     req = _blocks(100, "r")
     _write("short", req[:1])
 
-    cand = hs.find_best_restore_candidate(req, 100, 0.6, "m1")
+    cand = hs.find_best_restore_candidate([], req, 100, 0.6, "m1")
 
     assert cand is None
 
@@ -55,7 +55,7 @@ def test_equal_length_behavior_unchanged(meta_dir):
     cand_blocks = req[:70] + _blocks(30, "z")  # 70 match, then diverge
     _write("same_len", cand_blocks)
 
-    cand = hs.find_best_restore_candidate(req, 100, 0.6, "m1")
+    cand = hs.find_best_restore_candidate([], req, 100, 0.6, "m1")
 
     assert cand is not None
     key, ratio = cand
@@ -67,6 +67,6 @@ def test_empty_request_returns_none(meta_dir):
     """No request blocks: no candidate, no division by zero."""
     _write("some", _blocks(10))
 
-    cand = hs.find_best_restore_candidate([], 100, 0.6, "m1")
+    cand = hs.find_best_restore_candidate([], [], 100, 0.6, "m1")
 
     assert cand is None

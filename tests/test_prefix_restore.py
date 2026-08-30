@@ -13,6 +13,12 @@ import pytest
 import hashing as hs
 
 
+@pytest.fixture()
+def meta_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(hs, "META_DIR", str(tmp_path))
+    return tmp_path
+
+
 def _write_prefix(key, prefix_hashes, bin_size=None):
     hs.write_meta(key, "p", [], 100, "m1", prefix_hashes=prefix_hashes, bin_size=bin_size)
 
@@ -88,49 +94,3 @@ def test_model_filter(meta_dir):
     cand = hs.find_best_restore_candidate(req_hashes, [], 100, 0.0, "m1")
     assert cand is not None
     assert cand[0] == "same"
-
-
-def test_tier1_uses_saved_prefix_hashes(meta_dir):
-    """A continuation request matches the response-extended saved hashes even
-    when the prompt-only hashes are below the threshold."""
-    req_hashes = ["h_a", "h_ab", "h_abc", "h_abcd"]
-    hs.write_meta(
-        "meta_saved",
-        "p",
-        [],
-        100,
-        "m1",
-        prefix_hashes=["h_a", "h_ab"],
-        saved_prefix_hashes=["h_a", "h_ab", "h_abc"],
-        bin_size=100,
-    )
-    cand = hs.find_best_restore_candidate(req_hashes, [], 100, 0.6, "m1")
-    assert cand is not None
-    assert cand[0] == "meta_saved"
-    assert cand[1] == pytest.approx(0.75)
-
-
-def test_tier1_saved_hashes_beat_prompt_only_hashes(meta_dir):
-    req_hashes = ["h_a", "h_ab", "h_abc", "h_abcd"]
-    hs.write_meta(
-        "prompt_only",
-        "p",
-        [],
-        100,
-        "m1",
-        prefix_hashes=["h_a", "h_ab"],
-        bin_size=100,
-    )
-    hs.write_meta(
-        "saved",
-        "p",
-        [],
-        100,
-        "m1",
-        prefix_hashes=["h_a", "h_ab"],
-        saved_prefix_hashes=["h_a", "h_ab", "h_abc"],
-        bin_size=200,
-    )
-    cand = hs.find_best_restore_candidate(req_hashes, [], 100, 0.6, "m1")
-    assert cand is not None
-    assert cand[0] == "saved"

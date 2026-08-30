@@ -33,7 +33,7 @@ async def test_find_best_restore_candidate_runs_in_thread_and_keeps_loop_respons
             await asyncio.sleep(0.05)
 
     hb = asyncio.create_task(heartbeat())
-    result = await hs.find_best_restore_candidate_async(["b1"], 100, 0.6, "model")
+    result = await hs.find_best_restore_candidate_async(["b1"], [], 100, 0.6, "model")
     await hb
 
     assert result is None

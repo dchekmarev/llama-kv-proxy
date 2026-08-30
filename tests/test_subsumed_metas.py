@@ -7,8 +7,15 @@ A meta M is subsumed when M.key (its full-conversation hash) appears among the
 new conversation's prefix hashes. M.key always equals M's last prefix hash.
 """
 
+import pytest
 
 import hashing as hs
+
+
+@pytest.fixture()
+def meta_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(hs, "META_DIR", str(tmp_path))
+    return tmp_path
 
 
 def _write(key, prefix_hashes, model_id="m1"):
