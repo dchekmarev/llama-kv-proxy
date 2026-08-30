@@ -192,6 +192,32 @@ async def test_cache_stats_endpoint(sm, meta_dir, counters):
     assert stats["total_bytes"] > 0
 
 
+async def test_health_probes_backends_concurrently(sm):
+    """L3: health() must probe all backends concurrently (asyncio.gather). A
+    sequential probe would block on the barrier (only one party present) and
+    time out; a concurrent probe releases it."""
+    import asyncio
+
+    barrier = asyncio.Barrier(3)
+    clients = []
+    for i in range(3):
+        c = MagicMock()
+
+        async def fake_health(i=i, barrier=barrier):
+            await barrier.wait()
+            return {"ok": True, "i": i}
+
+        c.health = fake_health
+        clients.append(c)
+    app_module.app.state.sm = sm
+    app_module.app.state.clients = clients
+
+    out = await asyncio.wait_for(app_module.health(), timeout=2.0)
+
+    assert out["ok"] is True
+    assert len(out["backends"]) == 3
+
+
 async def test_purge_deletes_bin_file_directly(sm, tmp_path, monkeypatch):
     """When BIN_CACHE_DIR is set, the .bin file is removed from disk too."""
     bin_dir = tmp_path / "bin"
