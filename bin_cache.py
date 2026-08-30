@@ -49,6 +49,17 @@ def _is_recent(path: str, now: float, grace_s: float) -> bool:
         return False
 
 
+def _delete_meta(basename: str) -> None:
+    """Best-effort delete of the meta file for a .bin basename."""
+    meta_path = os.path.join(META_DIR, f"{basename}.meta.json")
+    try:
+        os.remove(meta_path)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log.warning("bin_cache_meta_remove_fail %s: %s", meta_path, e)
+
+
 def _entries(dir: str) -> list[tuple[float, str, int, bool]]:
     """(last_use, path, size, has_meta) for every file in dir.
 
@@ -97,11 +108,16 @@ def clean_bin_cache(dir: str, max_mb: int) -> dict:
             continue
         try:
             os.remove(path)
-            deleted.append(os.path.basename(path))
+            basename = os.path.basename(path)
+            deleted.append(basename)
             total -= size
+            # Evict the meta together with the .bin: a meta without its .bin
+            # is stale and would otherwise linger until the next reconcile.
+            if has_meta:
+                _delete_meta(basename)
             log.info(
                 "bin_cache_deleted file=%s size_mb=%.1f",
-                os.path.basename(path),
+                basename,
                 size / 1024 / 1024,
             )
         except OSError as e:

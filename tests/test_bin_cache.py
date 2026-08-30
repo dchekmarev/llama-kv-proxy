@@ -97,6 +97,27 @@ def test_clean_orphan_deleted_first(bin_dir, meta_dir):
     assert os.path.exists(os.path.join(str(bin_dir), "tracked"))
 
 
+def test_clean_deletes_meta_alongside_bin(bin_dir, meta_dir):
+    """M3: evicting a tracked .bin must also delete its meta (no orphan meta
+    left behind for the next reconcile/restore to clean up)."""
+    now = time.time()
+    mb = 1024 * 1024
+    _make_bin(bin_dir, "evict", mb, age_s=3600)
+    _make_meta(meta_dir, "evict", now - 3600)
+    _make_bin(bin_dir, "keep", mb)
+    _make_meta(meta_dir, "keep", now)
+
+    res = bin_cache.clean_bin_cache(str(bin_dir), 1)
+
+    assert res["deleted"] == ["evict"]
+    assert not os.path.exists(os.path.join(str(bin_dir), "evict"))
+    assert not os.path.exists(
+        os.path.join(str(meta_dir), "evict.meta.json")
+    ), "meta must be deleted together with the .bin"
+    assert os.path.exists(os.path.join(str(bin_dir), "keep"))
+    assert os.path.exists(os.path.join(str(meta_dir), "keep.meta.json"))
+
+
 def test_delete_bin_file(bin_dir):
     _make_bin(bin_dir, "a", 100)
     assert bin_cache.delete_bin_file(str(bin_dir), "a") is True
