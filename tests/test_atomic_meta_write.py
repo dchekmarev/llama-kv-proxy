@@ -10,6 +10,12 @@ import pytest
 import hashing as hs
 
 
+@pytest.fixture()
+def meta_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(hs, "META_DIR", str(tmp_path))
+    return tmp_path
+
+
 def _tmp_leftovers(meta_dir):
     return [p.name for p in meta_dir.iterdir() if p.name.endswith(".tmp")]
 
