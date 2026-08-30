@@ -4,13 +4,11 @@
 get_model_id_cached (no per-request HTTP round-trip), falling back to MODEL_ID
 when the cached id is "unknown"."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 import app as app_module
-import slot_manager as sm_module
-from slot_manager import SlotManager
 
 
 class FakeRequest:
@@ -19,20 +17,6 @@ class FakeRequest:
 
     async def json(self):
         return self._data
-
-
-@pytest.fixture()
-def sm(monkeypatch):
-    monkeypatch.setattr(sm_module, "BACKENDS", [{"url": "http://be", "n_slots": 2}])
-    manager = SlotManager()
-    client = MagicMock()
-    client.save_slot = AsyncMock(return_value=True)
-    client.restore_slot = AsyncMock(return_value=True)
-    client.get_model_id_cached = AsyncMock(return_value="m1")
-    client.get_loaded_model = AsyncMock(return_value="m1")
-    client.chat_completions = AsyncMock(return_value={"choices": []})
-    manager.set_clients([client])
-    return manager
 
 
 def _chat(data):

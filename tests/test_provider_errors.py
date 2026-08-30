@@ -4,14 +4,11 @@
 HTTP 502 instead of being returned to the client as HTTP 200."""
 
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 import app as app_module
-import hashing as hs
-import slot_manager as sm_module
-from slot_manager import SlotManager
 
 
 class FakeRequest:
@@ -20,26 +17,6 @@ class FakeRequest:
 
     async def json(self):
         return self._data
-
-
-@pytest.fixture()
-def sm(monkeypatch):
-    monkeypatch.setattr(sm_module, "BACKENDS", [{"url": "http://be", "n_slots": 2}])
-    manager = SlotManager()
-    client = MagicMock()
-    client.save_slot = AsyncMock(return_value=True)
-    client.restore_slot = AsyncMock(return_value=True)
-    client.get_model_id_cached = AsyncMock(return_value="m1")
-    client.get_loaded_model = AsyncMock(return_value="m1")
-    client.chat_completions = AsyncMock(return_value={"choices": []})
-    manager.set_clients([client])
-    return manager
-
-
-@pytest.fixture()
-def meta_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(hs, "META_DIR", str(tmp_path))
-    return tmp_path
 
 
 async def _chat(sm, content):

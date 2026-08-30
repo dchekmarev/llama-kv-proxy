@@ -13,12 +13,6 @@ import pytest
 import hashing as hs
 
 
-@pytest.fixture()
-def meta_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(hs, "META_DIR", str(tmp_path))
-    return tmp_path
-
-
 def _write_prefix(key, prefix_hashes, bin_size=None):
     hs.write_meta(key, "p", [], 100, "m1", prefix_hashes=prefix_hashes, bin_size=bin_size)
 

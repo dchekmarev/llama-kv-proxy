@@ -33,12 +33,6 @@ def sm(monkeypatch):
 
 
 @pytest.fixture()
-def meta_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(hs, "META_DIR", str(tmp_path))
-    return tmp_path
-
-
-@pytest.fixture()
 def counters(monkeypatch):
     monkeypatch.setattr(hs, "_hits", 0)
     monkeypatch.setattr(hs, "_misses", 0)

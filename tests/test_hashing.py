@@ -18,12 +18,6 @@ def _blocks(n, seed="x"):
     return [f"{seed}{i}" for i in range(n)]
 
 
-@pytest.fixture()
-def meta_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(hs, "META_DIR", str(tmp_path))
-    return tmp_path
-
-
 def _write(key, blocks):
     hs.write_meta(key, "p", blocks, 100, "m1")
 

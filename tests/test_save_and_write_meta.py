@@ -13,12 +13,6 @@ import bin_cache
 import hashing as hs
 
 
-@pytest.fixture()
-def meta_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(hs, "META_DIR", str(tmp_path))
-    return tmp_path
-
-
 def _sm():
     sm = MagicMock()
     sm.save_after = AsyncMock(return_value=True)
