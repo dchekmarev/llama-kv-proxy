@@ -89,6 +89,7 @@ All are environment variables; defaults in parentheses.
 - ACQUIRE_TIMEOUT: Maximum wait for a free slot in seconds (300).
 - MODEL_ID: Fallback model id returned by /v1/models when the backend is unavailable (llama.cpp).
 - MODEL_ID_TTL / MODEL_ID_TIMEOUT / UNKNOWN_MODEL_ID_RETRY: Backend model‑id cache TTL (60s), fetch timeout (5s), and retry interval while the id is unknown (5s).
+- METRICS_TIMEOUT: Timeout (seconds) for fetching a backend's /metrics during a scrape; a slow backend must not stall the whole /metrics response (5).
 - SLOT_POLL_INTERVAL_S: Interval between backend GET /slots polls (30).
 - META_TTL_H: Age after which .meta files are evicted (24h).
 - META_MAX_FILES / META_MAX_MB: Eviction caps on file count (1000) and total size (512 MB).
@@ -106,7 +107,8 @@ All are environment variables; defaults in parentheses.
 - GET /proxy/health — backend availability probe plus slot state.
 - GET /cache/stats — cache file count, total size, hit/miss counters.
 - POST /cache/clear — delete all local meta files (and best‑effort purge backend .bin files).
-- Any other path — forwarded to the first backend as‑is (native llama.cpp endpoints: `/slots?model=...`, `/health`, `/metrics`, `/tokenize`, …), with the response streamed back.
+- GET /metrics — Prometheus target: merged backend `/metrics` across all active (loaded) models, each metric carrying `model` and `backend` labels. `?model=X` filters to a single model. A down backend/model is skipped, never failing the scrape.
+- Any other path — forwarded to the first backend as‑is (native llama.cpp endpoints: `/slots?model=...`, `/health`, `/tokenize`, …), with the response streamed back.
 
 ### Tests
 

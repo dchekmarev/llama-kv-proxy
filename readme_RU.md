@@ -96,6 +96,7 @@ docker inspect proxycache --format='{{.State.Health.Status}}'
 - `ACQUIRE_TIMEOUT`: максимальное ожидание свободного слота в секундах (300).
 - `MODEL_ID`: запасной id модели, который прокси отдаёт в /v1/models, когда бэкенд недоступен (llama.cpp).
 - `MODEL_ID_TTL` / `MODEL_ID_TIMEOUT` / `UNKNOWN_MODEL_ID_RETRY`: TTL кэша id модели с бэкенда (60с), таймаут запроса (5с) и интервал повтора, пока id неизвестен (5с).
+- `METRICS_TIMEOUT`: таймаут (сек) запроса /metrics бэкенда при скрейпе; медленный бэкенд не должен тормозить весь ответ /metrics (5).
 - `SLOT_POLL_INTERVAL_S`: интервал опроса GET /slots бэкендов (30).
 - `META_TTL_H`: возраст .meta-файлов, после которого они удаляются (24ч).
 - `META_MAX_FILES` / `META_MAX_MB`: лимиты эвикции по числу файлов (1000) и общему размеру (512 МБ).
@@ -113,7 +114,8 @@ docker inspect proxycache --format='{{.State.Health.Status}}'
 - GET /proxy/health — доступность бэкендов + состояние слотов.
 - GET /cache/stats — количество файлов кэша, общий размер, счётчики hit/miss.
 - POST /cache/clear — удалить все локальные meta-файлы (и best-effort .bin на бэкендах).
-- Любой другой путь — форвардится в первый бэкенд как есть (нативные эндпоинты llama.cpp: `/slots?model=...`, `/health`, `/metrics`, `/tokenize`, …), ответ стримится.
+- GET /metrics — Prometheus-таргет: объединённые `/metrics` бэкендов по всем активным (loaded) моделям, каждая метрика несёт лейблы `model` и `backend`. `?model=X` фильтрует по одной модели. Недоступный бэкенд/модель пропускается, не роняя весь scrape.
+- Любой другой путь — форвардится в первый бэкенд как есть (нативные эндпоинты llama.cpp: `/slots?model=...`, `/health`, `/tokenize`, …), ответ стримится.
 
 ### Тесты
 

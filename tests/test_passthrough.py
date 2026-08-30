@@ -67,11 +67,11 @@ async def test_passthrough_forwards_method_path_query():
     client, built, _ = _mock_client([b'{"ok":true}'])
     _setup([client])
 
-    resp = await _passthrough("metrics", query="x=1")
+    resp = await _passthrough("tokenize", query="x=1")
 
     args, kwargs = client.client.build_request.call_args
     assert args[0] == "GET"
-    assert args[1] == "/metrics"
+    assert args[1] == "/tokenize"
     assert kwargs["params"] == "x=1"
     assert client.client.send.await_args.args[0] is built
     assert resp.status_code == 200
@@ -127,7 +127,7 @@ async def test_passthrough_starlette_style_headers():
     _setup([client])
     headers = StarletteLikeHeaders({"host": "test", "x-custom": "7"})
 
-    await _passthrough("metrics", headers=headers)
+    await _passthrough("tokenize", headers=headers)
 
     kwargs = client.client.build_request.call_args.kwargs
     assert kwargs["headers"]["x-custom"] == "7"
@@ -165,7 +165,7 @@ async def test_passthrough_uses_first_backend():
     second, _, _ = _mock_client([b"second"])
     _setup([first, second])
 
-    await _passthrough("metrics")
+    await _passthrough("tokenize")
 
     first.client.build_request.assert_called_once()
     second.client.build_request.assert_not_called()

@@ -94,6 +94,10 @@ MODEL_ID_TTL = float(os.getenv("MODEL_ID_TTL", "60"))
 MODEL_ID_TIMEOUT = float(os.getenv("MODEL_ID_TIMEOUT", "5"))
 UNKNOWN_MODEL_ID_RETRY = float(os.getenv("UNKNOWN_MODEL_ID_RETRY", "5"))
 
+# Short timeout (seconds) for fetching a backend's /metrics during a scrape:
+# a slow/down backend must not stall the whole /metrics response.
+METRICS_TIMEOUT = float(os.getenv("METRICS_TIMEOUT", "5"))
+
 # Interval (seconds) between backend slot-state polls (GET /slots).
 SLOT_POLL_INTERVAL_S = float(os.getenv("SLOT_POLL_INTERVAL_S", "30"))
 
