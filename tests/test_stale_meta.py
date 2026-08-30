@@ -10,6 +10,7 @@ import pytest
 import app as app_module
 import hashing as hs
 import slot_manager as sm_module
+from llama_client import RESTORE_MISSING
 from slot_manager import SlotManager
 
 
@@ -89,11 +90,13 @@ async def test_delete_meta_async(meta_dir):
 
 
 @pytest.mark.asyncio
-async def test_stale_meta_dropped_when_restore_fails(sm, meta_dir, monkeypatch):
-    """restore -> False: the meta must be deleted (spied via delete_meta_async)."""
+async def test_stale_meta_dropped_when_file_missing(sm, meta_dir, monkeypatch):
+    """restore -> RESTORE_MISSING (404): the meta must be deleted."""
     content = _big_content()
     key = _write_meta_for(content, meta_dir)
-    sm.backends[0]["client"].restore_slot = AsyncMock(return_value=False)
+    sm.backends[0]["client"].restore_slot = AsyncMock(
+        return_value=RESTORE_MISSING
+    )
 
     delete_meta_async = AsyncMock()
     monkeypatch.setattr(hs, "delete_meta_async", delete_meta_async)
@@ -101,6 +104,22 @@ async def test_stale_meta_dropped_when_restore_fails(sm, meta_dir, monkeypatch):
     await _chat(sm, content)
 
     delete_meta_async.assert_awaited_once_with(key)
+
+
+@pytest.mark.asyncio
+async def test_meta_kept_when_restore_fails_other(sm, meta_dir, monkeypatch):
+    """restore -> False (a non-missing failure): the meta must be kept, since
+    the cache may still be valid and a retry can succeed."""
+    content = _big_content()
+    _write_meta_for(content, meta_dir)
+    sm.backends[0]["client"].restore_slot = AsyncMock(return_value=False)
+
+    delete_meta_async = AsyncMock()
+    monkeypatch.setattr(hs, "delete_meta_async", delete_meta_async)
+
+    await _chat(sm, content)
+
+    delete_meta_async.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from llama_client import LlamaClient
+from llama_client import RESTORE_MISSING, LlamaClient
 
 
 def make_client():
@@ -113,6 +113,24 @@ async def test_restore_slot_without_model_omits_model():
     await c.restore_slot(0, "abc")
     assert c.client.post.call_args.kwargs.get("params") == {"action": "restore"}
     assert c.client.post.call_args.kwargs.get("json") == {"filename": "abc"}
+
+
+@pytest.mark.asyncio
+async def test_restore_slot_404_reports_missing():
+    """A 404 means the cache file does not exist: report RESTORE_MISSING so the
+    caller can drop the stale meta (M7)."""
+    c = make_client()
+    c.client.post = AsyncMock(return_value=resp(404, {}))
+    assert await c.restore_slot(0, "abc") == RESTORE_MISSING
+
+
+@pytest.mark.asyncio
+async def test_restore_slot_other_error_is_false():
+    """A non-404 failure (e.g. 500) is a transient/other error: False, so the
+    caller keeps the meta."""
+    c = make_client()
+    c.client.post = AsyncMock(return_value=resp(500, {}))
+    assert await c.restore_slot(0, "abc") is False
 
 
 # --- delete_cache_file -----------------------------------------------------
