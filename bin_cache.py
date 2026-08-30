@@ -76,8 +76,10 @@ def _entries(dir: str) -> list[tuple[float, str, int, bool]]:
         except OSError:
             continue
         ts = _meta_timestamp(os.path.basename(path))
-        has_meta = ts is not None
-        entries.append((ts if has_meta else 0.0, path, size, has_meta))
+        if ts is None:
+            entries.append((0.0, path, size, False))
+        else:
+            entries.append((ts, path, size, True))
     return entries
 
 

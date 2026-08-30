@@ -207,13 +207,15 @@ All parameters are environment variables; defaults in parentheses.
 ```bash
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pip install ruff pytest
+pip install ruff pytest mypy
 
 python3 -m pytest tests/ -q   # run the test suite
 ruff check .                  # lint
+python3 -m mypy app.py config.py slot_manager.py llama_client.py \
+  hashing.py bin_cache.py metrics.py request_id.py version.py llama_kv_proxy.py
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same checks on every push and pull request.
+CI (`.github/workflows/ci.yml`) runs the same checks (ruff, mypy, pytest) on every push and pull request.
 
 ## Limitations & caveats
 
