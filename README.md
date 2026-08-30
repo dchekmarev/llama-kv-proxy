@@ -190,7 +190,8 @@ All parameters are environment variables; defaults in parentheses.
 
 | File | Purpose |
 |---|---|
-| `app.py` | FastAPI app: chat endpoint, streaming, pass-through, background loops (eviction, slot polling, `.bin` cleanup/reconcile) |
+| `app.py` | FastAPI app: lifespan, request-id middleware, the thin `/v1/chat/completions` endpoint, pass-through, background loops (eviction, slot polling, `.bin` cleanup/reconciliation), non-chat endpoints |
+| `chat_flow.py` | Chat request pipeline: effective-model resolution, cache key, restore selection, slot acquisition, backend dispatch, streaming reader, save/meta/LRU follow-up |
 | `llama_kv_proxy.py` | uvicorn entry point |
 | `config.py` | Environment configuration |
 | `slot_manager.py` | Slot pools, LRU marks, per-slot locks, restore/save |
@@ -212,7 +213,8 @@ pip install ruff pytest mypy
 python3 -m pytest tests/ -q   # run the test suite
 ruff check .                  # lint
 python3 -m mypy app.py config.py slot_manager.py llama_client.py \
-  hashing.py bin_cache.py metrics.py request_id.py version.py llama_kv_proxy.py
+  hashing.py bin_cache.py metrics.py request_id.py version.py llama_kv_proxy.py \
+  chat_flow.py
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same checks (ruff, mypy, pytest) on every push and pull request.

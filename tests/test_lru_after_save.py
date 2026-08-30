@@ -17,6 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import app as app_module
+import bin_cache
+import chat_flow
 
 
 class FakeResp:
@@ -47,11 +49,11 @@ class FakeRequest:
 @pytest.fixture(autouse=True)
 def lru_env(monkeypatch):
     """Enabled .bin cache, a clean_bin_cache spy, and a fresh in-flight flag."""
-    monkeypatch.setattr(app_module, "BIN_CACHE_DIR", "/tmp/bin")
-    monkeypatch.setattr(app_module, "BIN_CACHE_MAX_MB", 100)
+    monkeypatch.setattr(chat_flow, "BIN_CACHE_DIR", "/tmp/bin")
+    monkeypatch.setattr(chat_flow, "BIN_CACHE_MAX_MB", 100)
     clean = MagicMock()
-    monkeypatch.setattr(app_module.bin_cache, "clean_bin_cache", clean)
-    monkeypatch.setattr(app_module, "_lru_check_in_flight", False)
+    monkeypatch.setattr(bin_cache, "clean_bin_cache", clean)
+    monkeypatch.setattr(chat_flow, "_lru_check_in_flight", False)
     return clean
 
 
@@ -74,7 +76,7 @@ async def _chat(sm, content, stream=False):
 async def test_big_json_save_triggers_lru_check(sm, meta_dir, lru_env, monkeypatch):
     """A successful big non-stream save triggers exactly one LRU check with
     the configured dir and cap."""
-    monkeypatch.setattr(app_module, "BIG_THRESHOLD_WORDS", 1)
+    monkeypatch.setattr(chat_flow, "BIG_THRESHOLD_WORDS", 1)
     await _chat(sm, "hello world")
     await _pump()
     lru_env.assert_called_once_with("/tmp/bin", 100)
@@ -88,7 +90,7 @@ async def test_big_stream_save_triggers_lru_check(sm, meta_dir, lru_env):
     await lock.acquire()
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
     _ = [c async for c in gen]
@@ -103,7 +105,7 @@ async def test_failed_save_does_not_trigger_lru_check(
     sm, meta_dir, lru_env, monkeypatch
 ):
     """A failed slot save must not trigger the LRU check."""
-    monkeypatch.setattr(app_module, "BIG_THRESHOLD_WORDS", 1)
+    monkeypatch.setattr(chat_flow, "BIG_THRESHOLD_WORDS", 1)
     sm.backends[0]["client"].save_slot = AsyncMock(return_value=False)
     await _chat(sm, "hello world")
     await _pump()
@@ -121,8 +123,8 @@ async def test_small_request_does_not_trigger_lru_check(sm, meta_dir, lru_env):
 @pytest.mark.asyncio
 async def test_disabled_bin_cache_never_triggers(sm, meta_dir, lru_env, monkeypatch):
     """An empty BIN_CACHE_DIR disables the .bin cache entirely."""
-    monkeypatch.setattr(app_module, "BIN_CACHE_DIR", "")
-    monkeypatch.setattr(app_module, "BIG_THRESHOLD_WORDS", 1)
+    monkeypatch.setattr(chat_flow, "BIN_CACHE_DIR", "")
+    monkeypatch.setattr(chat_flow, "BIG_THRESHOLD_WORDS", 1)
     await _chat(sm, "hello world")
     await _pump()
     lru_env.assert_not_called()
@@ -131,8 +133,8 @@ async def test_disabled_bin_cache_never_triggers(sm, meta_dir, lru_env, monkeypa
 @pytest.mark.asyncio
 async def test_zero_max_mb_never_triggers(sm, meta_dir, lru_env, monkeypatch):
     """max_mb <= 0 disables the size cap, hence the LRU check."""
-    monkeypatch.setattr(app_module, "BIN_CACHE_MAX_MB", 0)
-    monkeypatch.setattr(app_module, "BIG_THRESHOLD_WORDS", 1)
+    monkeypatch.setattr(chat_flow, "BIN_CACHE_MAX_MB", 0)
+    monkeypatch.setattr(chat_flow, "BIG_THRESHOLD_WORDS", 1)
     await _chat(sm, "hello world")
     await _pump()
     lru_env.assert_not_called()
@@ -151,18 +153,18 @@ async def test_in_flight_check_is_not_duplicated(lru_env, monkeypatch):
         started.set()
         release.wait(5)
 
-    monkeypatch.setattr(app_module.bin_cache, "clean_bin_cache", slow_clean)
+    monkeypatch.setattr(bin_cache, "clean_bin_cache", slow_clean)
 
-    app_module._schedule_lru_check()
+    chat_flow._schedule_lru_check()
     # Yield control so the task starts the worker thread (which sets
     # `started`); blocking the loop here would deadlock the test.
     deadline = time.time() + 5
     while not started.is_set() and time.time() < deadline:
         await asyncio.sleep(0.01)
     assert started.is_set(), "the first check must start"
-    app_module._schedule_lru_check()  # skipped: a check is already in flight
+    chat_flow._schedule_lru_check()  # skipped: a check is already in flight
     release.set()
     await _pump()
 
     assert len(slow_calls) == 1, "a second concurrent check must be skipped"
-    assert not app_module._lru_check_in_flight, "the in-flight flag must reset"
+    assert not chat_flow._lru_check_in_flight, "the in-flight flag must reset"

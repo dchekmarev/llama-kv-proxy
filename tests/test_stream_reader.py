@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import app as app_module
+import chat_flow
 import slot_manager as sm_module
 from slot_manager import SlotManager
 
@@ -76,7 +76,7 @@ async def test_normal_stream_delivers_all_and_releases(sm, no_meta):
     chunks = [b"c%d" % i for i in range(40)]
     resp = FakeResp(chunks, delay=0.005)
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
 
@@ -97,7 +97,7 @@ async def test_slot_released_when_client_disconnects(sm, no_meta):
     chunks = [b"c%d" % i for i in range(64)]
     resp = FakeResp(chunks, delay=0.005)
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
 
@@ -118,13 +118,13 @@ async def test_slot_released_when_client_disconnects(sm, no_meta):
 async def test_slot_released_when_consumer_vanishes(sm, no_meta, monkeypatch):
     """Defense in depth: consumer vanishes without aclose; the reader's put must
     not block forever."""
-    monkeypatch.setattr(app_module, "STREAM_PUT_TIMEOUT", 0.2)
+    monkeypatch.setattr(chat_flow, "STREAM_PUT_TIMEOUT", 0.2)
     g = (0, "model", 0)
     lock = await _acquire(sm, g)
     chunks = [b"c%d" % i for i in range(64)]
     resp = FakeResp(chunks, delay=0.005)
 
-    _ = await app_module.start_stream_task(
+    _ = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
     # never consume, never close
@@ -141,7 +141,7 @@ async def test_backend_error_mid_stream_releases_slot(sm, no_meta):
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b", b"c"], delay=0.005, fail_after=2)
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
 
@@ -164,7 +164,7 @@ async def test_small_stream_does_not_save_cache(sm, monkeypatch):
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=False
     )
     received = [c async for c in gen]
@@ -186,7 +186,7 @@ async def test_big_stream_saves_cache(sm, monkeypatch):
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
     _ = [c async for c in gen]
@@ -209,7 +209,7 @@ async def test_partial_stream_does_not_save_cache(sm, monkeypatch):
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b", b"c"], delay=0.005, fail_after=2)
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
     _ = [c async for c in gen]
@@ -230,7 +230,7 @@ async def test_meta_written_when_save_succeeds(sm, monkeypatch):
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
     _ = [c async for c in gen]
@@ -253,7 +253,7 @@ async def test_meta_not_written_when_save_fails(sm, monkeypatch):
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
     _ = [c async for c in gen]
@@ -271,11 +271,11 @@ async def test_reader_task_kept_alive_until_done(sm, no_meta):
     lock = await _acquire(sm, g)
     resp = FakeResp([b"a", b"b"], delay=0.01)
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
 
-    tasks = getattr(app_module, "_READER_TASKS", None)
+    tasks = getattr(chat_flow, "_READER_TASKS", None)
     assert tasks is not None, "reader tasks must be tracked with strong references"
     assert len(tasks) == 1, "in-flight reader task must be tracked"
 
@@ -294,13 +294,13 @@ async def test_put_timeout_does_not_save_partial_stream(sm, monkeypatch):
 
     write_meta_async = AsyncMock()
     monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
-    monkeypatch.setattr(app_module, "STREAM_PUT_TIMEOUT", 0.1)
+    monkeypatch.setattr(chat_flow, "STREAM_PUT_TIMEOUT", 0.1)
     g = (0, "model", 0)
     lock = await _acquire(sm, g)
     chunks = [b"c%d" % i for i in range(64)]
     resp = FakeResp(chunks, delay=0.005)
 
-    _ = await app_module.start_stream_task(
+    _ = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
     await _pump(1.0)

@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import app as app_module
 import bin_cache
+import chat_flow
 import hashing as hs
 
 
@@ -27,8 +27,8 @@ def _write_prefix(key, prefix_hashes, model_id="m1"):
 
 def _patch(monkeypatch):
     monkeypatch.setattr(hs, "write_meta_async", AsyncMock())
-    monkeypatch.setattr(app_module, "_schedule_lru_check", lambda: None)
-    monkeypatch.setattr(app_module, "_purge_backend_files", AsyncMock())
+    monkeypatch.setattr(chat_flow, "_schedule_lru_check", lambda: None)
+    monkeypatch.setattr(chat_flow, "_purge_backend_files", AsyncMock())
     monkeypatch.setattr(bin_cache, "get_bin_size", lambda d, k: None)
 
 
@@ -39,7 +39,7 @@ async def test_drops_subsumed_metas_after_successful_meta(meta_dir, monkeypatch)
     _write_prefix("h_abc", ["h_a", "h_ab", "h_abc"])
     _patch(monkeypatch)
 
-    ok = await app_module._save_and_write_meta(
+    ok = await chat_flow._save_and_write_meta(
         [], _sm(), ("g",), "h_abc", "p", [], ["h_a", "h_ab", "h_abc"], "m1"
     )
 
@@ -57,11 +57,11 @@ async def test_keeps_subsumed_metas_when_meta_write_fails(meta_dir, monkeypatch)
         raise OSError("disk full")
 
     monkeypatch.setattr(hs, "write_meta_async", _raise)
-    monkeypatch.setattr(app_module, "_schedule_lru_check", lambda: None)
-    monkeypatch.setattr(app_module, "_purge_backend_files", AsyncMock())
+    monkeypatch.setattr(chat_flow, "_schedule_lru_check", lambda: None)
+    monkeypatch.setattr(chat_flow, "_purge_backend_files", AsyncMock())
     monkeypatch.setattr(bin_cache, "get_bin_size", lambda d, k: None)
 
-    ok = await app_module._save_and_write_meta(
+    ok = await chat_flow._save_and_write_meta(
         [], _sm(), ("g",), "h_abc", "p", [], ["h_a", "h_ab", "h_abc"], "m1"
     )
 
@@ -78,11 +78,11 @@ async def test_passes_saved_hashes_and_deletes_request_hashes(meta_dir, monkeypa
     delete_mock = AsyncMock(return_value=[])
     monkeypatch.setattr(hs, "write_meta_async", write_mock)
     monkeypatch.setattr(hs, "delete_subsumed_metas_async", delete_mock)
-    monkeypatch.setattr(app_module, "_schedule_lru_check", lambda: None)
-    monkeypatch.setattr(app_module, "_purge_backend_files", AsyncMock())
+    monkeypatch.setattr(chat_flow, "_schedule_lru_check", lambda: None)
+    monkeypatch.setattr(chat_flow, "_purge_backend_files", AsyncMock())
     monkeypatch.setattr(bin_cache, "get_bin_size", lambda d, k: None)
 
-    ok = await app_module._save_and_write_meta(
+    ok = await chat_flow._save_and_write_meta(
         [],
         _sm(),
         ("g",),
@@ -116,11 +116,11 @@ async def test_falls_back_to_prompt_hashes_when_saved_missing(meta_dir, monkeypa
     delete_mock = AsyncMock(return_value=[])
     monkeypatch.setattr(hs, "write_meta_async", write_mock)
     monkeypatch.setattr(hs, "delete_subsumed_metas_async", delete_mock)
-    monkeypatch.setattr(app_module, "_schedule_lru_check", lambda: None)
-    monkeypatch.setattr(app_module, "_purge_backend_files", AsyncMock())
+    monkeypatch.setattr(chat_flow, "_schedule_lru_check", lambda: None)
+    monkeypatch.setattr(chat_flow, "_purge_backend_files", AsyncMock())
     monkeypatch.setattr(bin_cache, "get_bin_size", lambda d, k: None)
 
-    ok = await app_module._save_and_write_meta(
+    ok = await chat_flow._save_and_write_meta(
         [], _sm(), ("g",), "key", "p", ["b"], ["req_h"], "m1"
     )
 

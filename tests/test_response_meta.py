@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import app as app_module
+import chat_flow
 import hashing as hs
 import slot_manager as sm_module
 from slot_manager import SlotManager
@@ -52,30 +52,30 @@ async def _pump(seconds=0.3):
 
 def test_assistant_content_normal():
     out = {"choices": [{"message": {"content": "hi"}}]}
-    assert app_module._assistant_content(out) == "hi"
+    assert chat_flow._assistant_content(out) == "hi"
 
 
 def test_assistant_content_missing_choices():
-    assert app_module._assistant_content({"choices": []}) == ""
+    assert chat_flow._assistant_content({"choices": []}) == ""
 
 
 def test_assistant_content_missing_message():
-    assert app_module._assistant_content({"choices": [{}]}) == ""
+    assert chat_flow._assistant_content({"choices": [{}]}) == ""
 
 
 def test_assistant_content_none_content():
     out = {"choices": [{"message": {"content": None}}]}
-    assert app_module._assistant_content(out) == ""
+    assert chat_flow._assistant_content(out) == ""
 
 
 def test_assistant_content_non_string():
     out = {"choices": [{"message": {"content": ["a", "b"]}}]}
-    assert app_module._assistant_content(out) == "['a', 'b']"
+    assert chat_flow._assistant_content(out) == "['a', 'b']"
 
 
 def test_append_stream_content_delta():
     parts = []
-    app_module._append_stream_content(
+    chat_flow._append_stream_content(
         'data: {"choices": [{"delta": {"content": "he"}}]}', parts
     )
     assert parts == ["he"]
@@ -83,7 +83,7 @@ def test_append_stream_content_delta():
 
 def test_append_stream_content_message_fallback():
     parts = []
-    app_module._append_stream_content(
+    chat_flow._append_stream_content(
         'data: {"choices": [{"message": {"content": "lo"}}]}', parts
     )
     assert parts == ["lo"]
@@ -91,16 +91,16 @@ def test_append_stream_content_message_fallback():
 
 def test_append_stream_content_ignores_done_and_invalid():
     parts = []
-    app_module._append_stream_content("data: [DONE]", parts)
-    app_module._append_stream_content("data: not-json", parts)
-    app_module._append_stream_content('data: {"choices": []}', parts)
+    chat_flow._append_stream_content("data: [DONE]", parts)
+    chat_flow._append_stream_content("data: not-json", parts)
+    chat_flow._append_stream_content('data: {"choices": []}', parts)
     assert parts == []
 
 
 @pytest.mark.asyncio
 async def test_saved_conversation_values_empty_response_fallback():
     fallback = ("fp", ["fb"], ["fh"])
-    result = await app_module._saved_conversation_values(
+    result = await chat_flow._saved_conversation_values(
         [{"role": "user", "content": "a"}], "", "m1", *fallback
     )
     assert result == fallback
@@ -109,7 +109,7 @@ async def test_saved_conversation_values_empty_response_fallback():
 @pytest.mark.asyncio
 async def test_saved_conversation_values_with_response():
     messages = [{"role": "user", "content": "a"}]
-    prefix, blocks, hashes = await app_module._saved_conversation_values(
+    prefix, blocks, hashes = await chat_flow._saved_conversation_values(
         messages, "b", "m1", "fp", ["fb"], ["fh"]
     )
     expected = messages + [{"role": "assistant", "content": "b"}]
@@ -121,7 +121,7 @@ async def test_saved_conversation_values_with_response():
 @pytest.mark.asyncio
 async def test_stream_saves_response_extended_meta(sm, monkeypatch):
     save_mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(app_module, "_save_and_write_meta", save_mock)
+    monkeypatch.setattr(chat_flow, "_save_and_write_meta", save_mock)
     g = (0, "model", 0)
     await _acquire(sm, g)
     chunks = [
@@ -131,7 +131,7 @@ async def test_stream_saves_response_extended_meta(sm, monkeypatch):
     resp = FakeResp(chunks)
     messages = [{"role": "user", "content": "hi"}]
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True, messages=messages
     )
     _ = [c async for c in gen]
@@ -151,7 +151,7 @@ async def test_stream_saves_response_extended_meta(sm, monkeypatch):
 @pytest.mark.asyncio
 async def test_stream_parses_sse_split_across_chunks(sm, monkeypatch):
     save_mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(app_module, "_save_and_write_meta", save_mock)
+    monkeypatch.setattr(chat_flow, "_save_and_write_meta", save_mock)
     g = (0, "model", 0)
     await _acquire(sm, g)
     chunks = [
@@ -161,7 +161,7 @@ async def test_stream_parses_sse_split_across_chunks(sm, monkeypatch):
     resp = FakeResp(chunks)
     messages = [{"role": "user", "content": "hi"}]
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True, messages=messages
     )
     _ = [c async for c in gen]
@@ -176,13 +176,13 @@ async def test_stream_parses_sse_split_across_chunks(sm, monkeypatch):
 @pytest.mark.asyncio
 async def test_stream_without_response_falls_back_to_prompt_meta(sm, monkeypatch):
     save_mock = AsyncMock(return_value=True)
-    monkeypatch.setattr(app_module, "_save_and_write_meta", save_mock)
+    monkeypatch.setattr(chat_flow, "_save_and_write_meta", save_mock)
     g = (0, "model", 0)
     await _acquire(sm, g)
     resp = FakeResp([b"not sse"])
     messages = [{"role": "user", "content": "hi"}]
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True, messages=messages
     )
     _ = [c async for c in gen]
@@ -202,15 +202,15 @@ async def test_stream_falls_back_when_saved_values_fail(sm, monkeypatch):
     async def _raise(*_args, **_kwargs):
         raise RuntimeError("hashing failed")
 
-    monkeypatch.setattr(app_module, "_saved_conversation_values", _raise)
-    monkeypatch.setattr(app_module, "_save_and_write_meta", save_mock)
+    monkeypatch.setattr(chat_flow, "_saved_conversation_values", _raise)
+    monkeypatch.setattr(chat_flow, "_save_and_write_meta", save_mock)
     g = (0, "model", 0)
     await _acquire(sm, g)
     chunks = [b'data: {"choices": [{"delta": {"content": "hi"}}]}\n\n']
     resp = FakeResp(chunks)
     messages = [{"role": "user", "content": "hi"}]
 
-    gen = await app_module.start_stream_task(
+    gen = await chat_flow.start_stream_task(
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True, messages=messages
     )
     _ = [c async for c in gen]

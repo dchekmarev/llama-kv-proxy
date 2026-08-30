@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import app as app_module
+import chat_flow
 import hashing as hs
 import slot_manager as sm_module
 from llama_client import LlamaClient
@@ -218,10 +219,10 @@ async def test_purge_deletes_bin_file_directly(sm, tmp_path, monkeypatch):
     bin_dir.mkdir()
     bin_file = bin_dir / "abc"
     bin_file.write_bytes(b"x" * 100)
-    monkeypatch.setattr(app_module, "BIN_CACHE_DIR", str(bin_dir))
+    monkeypatch.setattr(chat_flow, "BIN_CACHE_DIR", str(bin_dir))
 
     client = sm.backends[0]["client"]
-    await app_module._purge_backend_files([client], [("abc", "m1")])
+    await chat_flow._purge_backend_files([client], [("abc", "m1")])
 
     assert not bin_file.exists()
     assert client.delete_cache_file.await_count == 1

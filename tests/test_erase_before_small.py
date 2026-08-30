@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import app as app_module
+import chat_flow
 import slot_manager as sm_module
 from slot_manager import SlotManager
 
@@ -40,7 +41,7 @@ async def _small_chat(sm, monkeypatch, flag: bool):
     client = sm.backends[0]["client"]
     app_module.app.state.sm = sm
     app_module.app.state.clients = [client]
-    monkeypatch.setattr(app_module, "ERASE_BEFORE_SMALL", flag)
+    monkeypatch.setattr(chat_flow, "ERASE_BEFORE_SMALL", flag)
     data = {"messages": [{"role": "user", "content": "hi"}], "stream": False}
     await app_module.chat(FakeRequest(data))
     return client
