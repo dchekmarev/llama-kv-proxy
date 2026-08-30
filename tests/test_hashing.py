@@ -6,6 +6,7 @@ shorter sequence — otherwise a short fully-matching candidate (old ratio 1.0)
 always evicts a longer, more useful one."""
 
 import glob
+import json
 import os
 
 import pytest
@@ -88,3 +89,33 @@ def test_scan_all_meta_skips_files_deleted_during_scan(meta_dir, monkeypatch):
     keys = {m.get("key") for m in metas}
     assert "real" in keys
     assert "phantom" not in keys
+
+
+def test_candidate_size_prefers_bin_size():
+    """L1: bin_size (bytes) takes precedence over the char-based estimates."""
+    assert (
+        hs._candidate_size({"bin_size": 1000, "prefix_bytes": 500, "prefix_len": 100})
+        == 1000
+    )
+
+
+def test_candidate_size_uses_prefix_bytes_when_no_bin():
+    """L1: without bin_size, the byte-length estimate is used (not char count)."""
+    assert hs._candidate_size({"prefix_bytes": 500, "prefix_len": 100}) == 500
+
+
+def test_candidate_size_falls_back_to_prefix_len():
+    """L1: old metas without prefix_bytes fall back to the char count."""
+    assert hs._candidate_size({"prefix_len": 100}) == 100
+
+
+def test_write_meta_stores_prefix_bytes(meta_dir):
+    """L1: write_meta records the UTF-8 byte length so the tie-break compares
+    bytes, not chars (a CJK prefix has more bytes than chars)."""
+    key = "a" * 64
+    hs.write_meta(key, "你好世界", ["b"], 100, "m1")
+    path = os.path.join(str(meta_dir), f"{key}.meta.json")
+    with open(path, encoding="utf-8") as f:
+        meta = json.load(f)
+    assert meta["prefix_len"] == 4
+    assert meta["prefix_bytes"] == len("你好世界".encode())
