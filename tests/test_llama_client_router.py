@@ -11,8 +11,10 @@ on /slots operations and reports per-model load state via a `status` field in
 - detect router mode from the presence of a `status` field.
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from llama_client import RESTORE_MISSING, LlamaClient
@@ -28,6 +30,7 @@ def resp(status_code, payload):
     r = MagicMock()
     r.status_code = status_code
     r.json = MagicMock(return_value=payload)
+    r.text = json.dumps(payload) if isinstance(payload, (dict, list)) else (payload or "")
     r.raise_for_status = MagicMock()
     return r
 
@@ -150,6 +153,27 @@ async def test_erase_slot_failure_does_not_raise():
     c = make_client()
     c.client.post = AsyncMock(side_effect=Exception("boom"))
     assert await c.erase_slot(3) is False
+
+
+# --- chat_completions non-stream error body ---------------------------------
+
+
+@pytest.mark.asyncio
+async def test_non_stream_http_error_surfaces_backend_body():
+    """L2: a 4xx/5xx must not raise; the backend's body is surfaced so the
+    caller sees the real error, not just the status code."""
+    c = make_client()
+    r = resp(500, {"error": "context length exceeded"})
+    r.raise_for_status = MagicMock(
+        side_effect=httpx.HTTPStatusError("err", request=MagicMock(), response=r)
+    )
+    c.client.post = AsyncMock(return_value=r)
+
+    out = await c.chat_completions({"messages": []}, slot_id=0, stream=False)
+
+    assert out["object"] == "error"
+    assert "500" in out["message"]
+    assert "context length exceeded" in out["raw"]
 
 
 # --- delete_cache_file -----------------------------------------------------
