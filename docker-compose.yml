@@ -1,6 +1,12 @@
 services:
   llama-kv-proxy:
-    build: .
+    build:
+      context: .
+      args:
+        # Match the host user so mounted volumes are writable without chown.
+        # $UID is auto-set in bash; export GID=$(id -g) to match the host group.
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
     container_name: llama-kv-proxy
     restart: unless-stopped
     ports:
@@ -13,7 +19,8 @@ services:
       - PORT=8080
       - LOG_LEVEL=INFO
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request, json, sys; d = json.load(urllib.request.urlopen('http://localhost:8080/proxy/health')); sys.exit(0 if d.get('ok') else 1)"]
+      # Probe the port the app actually listens on (PORT env, default 8081).
+      test: ["CMD", "python", "-c", "import json, os, sys, urllib.request; p = os.environ.get('PORT', '8081'); d = json.load(urllib.request.urlopen(f'http://localhost:{p}/proxy/health')); sys.exit(0 if d.get('ok') else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
