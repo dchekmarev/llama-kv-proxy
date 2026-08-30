@@ -27,10 +27,13 @@ def bin_dir(tmp_path):
     return d
 
 
-def _make_bin(bin_dir, key: str, size_bytes: int) -> str:
+def _make_bin(bin_dir, key: str, size_bytes: int, age_s: float = 0.0) -> str:
     path = os.path.join(str(bin_dir), key)
     with open(path, "wb") as f:
         f.write(b"x" * size_bytes)
+    if age_s:
+        t = time.time() - age_s
+        os.utime(path, (t, t))
     return path
 
 
@@ -82,7 +85,9 @@ def test_clean_deletes_oldest_first_by_meta_timestamp(bin_dir, meta_dir):
 def test_clean_orphan_deleted_first(bin_dir, meta_dir):
     now = time.time()
     mb = 1024 * 1024
-    _make_bin(bin_dir, "orphan", mb)
+    # A true orphan has an old mtime (it has been sitting there); a fresh
+    # meta-less .bin is an in-flight save and is protected by the grace window.
+    _make_bin(bin_dir, "orphan", mb, age_s=3600)
     _make_bin(bin_dir, "tracked", mb)
     _make_meta(meta_dir, "tracked", now)
 
@@ -144,8 +149,9 @@ def test_reconcile_deletes_stale_meta(bin_dir, meta_dir):
 
 
 def test_reconcile_deletes_orphan_bin(bin_dir, meta_dir):
-    # .bin with no matching meta -> orphan, delete the .bin.
-    _make_bin(bin_dir, "orphan", 100)
+    # .bin with no matching meta -> orphan, delete the .bin. An old mtime
+    # marks it as a true orphan (a fresh meta-less .bin is an in-flight save).
+    _make_bin(bin_dir, "orphan", 100, age_s=3600)
     res = bin_cache.reconcile_bin_cache(str(bin_dir))
     assert res["deleted_bins"] == ["orphan"]
     assert res["deleted_metas"] == []
@@ -159,8 +165,8 @@ def test_reconcile_both_directions(bin_dir, meta_dir):
     _make_meta(meta_dir, "ok", now)
     # Stale meta (no .bin).
     _make_meta(meta_dir, "stale", now)
-    # Orphan .bin (no meta).
-    _make_bin(bin_dir, "orphan", 100)
+    # Orphan .bin (no meta, old mtime = true orphan, not an in-flight save).
+    _make_bin(bin_dir, "orphan", 100, age_s=3600)
 
     res = bin_cache.reconcile_bin_cache(str(bin_dir))
 

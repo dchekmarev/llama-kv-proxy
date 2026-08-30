@@ -17,8 +17,9 @@ import glob
 import json
 import logging
 import os
+import time
 
-from config import META_DIR
+from config import BIN_SAVE_GRACE_S, META_DIR
 
 log = logging.getLogger(__name__)
 
@@ -33,13 +34,29 @@ def _meta_timestamp(basename: str) -> float | None:
         return None
 
 
-def _entries(dir: str) -> list[tuple[float, str, int]]:
-    """(last_use, path, size) for every file in dir.
+def _is_recent(path: str, now: float, grace_s: float) -> bool:
+    """True if the file was modified within the last grace_s seconds.
+
+    A .bin written by an in-flight save has a fresh mtime but no meta yet;
+    skipping it avoids deleting a just-saved cache before its meta lands.
+    A non-positive grace window disables the guard.
+    """
+    if grace_s <= 0:
+        return False
+    try:
+        return now - os.path.getmtime(path) <= grace_s
+    except OSError:
+        return False
+
+
+def _entries(dir: str) -> list[tuple[float, str, int, bool]]:
+    """(last_use, path, size, has_meta) for every file in dir.
 
     last_use is the meta timestamp when a meta exists, else 0 (orphaned
-    files sort first and are deleted before tracked ones).
+    files sort first and are deleted before tracked ones). has_meta reports
+    whether a matching meta file exists (used to protect in-flight saves).
     """
-    entries: list[tuple[float, str, int]] = []
+    entries: list[tuple[float, str, int, bool]] = []
     for path in glob.glob(os.path.join(dir, "*")):
         if not os.path.isfile(path):
             continue
@@ -48,7 +65,8 @@ def _entries(dir: str) -> list[tuple[float, str, int]]:
         except OSError:
             continue
         ts = _meta_timestamp(os.path.basename(path))
-        entries.append((ts if ts is not None else 0.0, path, size))
+        has_meta = ts is not None
+        entries.append((ts if has_meta else 0.0, path, size, has_meta))
     return entries
 
 
@@ -61,17 +79,22 @@ def clean_bin_cache(dir: str, max_mb: int) -> dict:
     if not dir or max_mb <= 0 or not os.path.isdir(dir):
         return {"deleted": [], "remaining": 0}
 
+    now = time.time()
     max_bytes = max_mb * 1024 * 1024
     entries = _entries(dir)
-    total = sum(size for _, _, size in entries)
+    total = sum(size for _, _, size, _ in entries)
     if total <= max_bytes:
         return {"deleted": [], "remaining": len(entries)}
 
     deleted: list[str] = []
     # Oldest (lowest last-use) first; stop once under the cap.
-    for _, path, size in sorted(entries, key=lambda e: e[0]):
+    for _, path, size, has_meta in sorted(entries, key=lambda e: e[0]):
         if total <= max_bytes:
             break
+        # A .bin without a meta that was just written is an in-flight save
+        # (its meta may not have landed yet); skip it this round.
+        if not has_meta and _is_recent(path, now, BIN_SAVE_GRACE_S):
+            continue
         try:
             os.remove(path)
             deleted.append(os.path.basename(path))
@@ -180,8 +203,13 @@ def reconcile_bin_cache(dir: str) -> dict:
             log.warning("bin_reconcile_meta_fail %s: %s", meta_path, e)
 
     deleted_bins: list[str] = []
+    now = time.time()
     for basename in sorted(bin_basenames - meta_basenames):
         bin_path = os.path.join(dir, basename)
+        # A fresh .bin without a meta is an in-flight save (its meta may land
+        # shortly); skip it so a just-saved cache is not deleted as an orphan.
+        if _is_recent(bin_path, now, BIN_SAVE_GRACE_S):
+            continue
         try:
             size = os.path.getsize(bin_path)
             os.remove(bin_path)

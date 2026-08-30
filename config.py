@@ -115,6 +115,11 @@ BIN_CACHE_INTERVAL_S = float(os.getenv("BIN_CACHE_INTERVAL_S", str(EVICT_INTERVA
 # Interval (seconds) between meta/.bin reconciliations (both directions:
 # stale metas without a .bin, orphan .bin without a meta). 0 disables it.
 BIN_RECONCILE_INTERVAL_S = float(os.getenv("BIN_RECONCILE_INTERVAL_S", "600"))
+# Grace window (seconds): a .bin file without a meta that was modified within
+# this window is treated as an in-flight save (its meta may not have been
+# written yet) and is skipped by the LRU cleanup and orphan reconciliation, so
+# a just-saved .bin is not deleted before its meta lands. 0 disables the guard.
+BIN_SAVE_GRACE_S = float(os.getenv("BIN_SAVE_GRACE_S", "10"))
 
 # Service port
 PORT = int(os.getenv("PORT", "8081"))
