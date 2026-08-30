@@ -1,7 +1,7 @@
 # config.py
 
 """
-Единая конфигурация для simple_proxycache:
+Unified configuration for llama-kv-proxy:
 - BACKENDS: [{"url": "...", "n_slots": N}]
 - WORDS_PER_BLOCK, BIG_THRESHOLD_WORDS, LCP_TH
 - PORT, REQUEST_TIMEOUT, MODEL_ID

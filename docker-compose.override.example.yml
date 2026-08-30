@@ -5,7 +5,7 @@
 # `docker compose up` merges this file on top of docker-compose.yml
 # automatically (no extra flags).
 services:
-  proxycache:
+  llama-kv-proxy:
     volumes:
       # Mount the host --slot-save-path so the proxy can delete .bin files
       # directly (llama.cpp has no disk-delete endpoint).

@@ -9,4 +9,4 @@ COPY . ./
 
 EXPOSE 8080
 
-CMD ["python", "proxycache.py"]
+CMD ["python", "llama_kv_proxy.py"]

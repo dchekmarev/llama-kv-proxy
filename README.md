@@ -1,6 +1,6 @@
 <img width="1000" alt="image_" src="https://github.com/user-attachments/assets/0d966dde-f1d8-432f-bad0-aa79a5ccf396" />
 
-# proxycache
+# llama-kv-proxy
 
 A proxy in front of llama.cpp that makes long-context chat and IDE workflows faster: it manages llama.cpp slots, reuses cached KV context, and restores saved caches from disk when needed. It speaks the OpenAI-compatible Chat Completions API (streaming SSE and non-streaming), so existing clients can connect without changes.
 
@@ -82,10 +82,10 @@ This enables the OpenAI-compatible HTTP server, a pool of 4 slots, and a directo
 2) Run the proxy next to it:
 
 ```bash
-git clone https://github.com/airnsk/proxycache.git
-cd proxycache
+git clone https://github.com/dchekmarev/llama-kv-proxy.git
+cd llama-kv-proxy
 python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
-python3 proxycache.py  # or: uvicorn app:app --host 0.0.0.0 --port 8081
+python3 llama_kv_proxy.py  # or: uvicorn app:app --host 0.0.0.0 --port 8081
 ```
 
 Run the proxy with a **single worker** (the default). The slot manager keeps per-process state (locks, LRU marks); multiple workers would each track slots independently and could route two requests to the same slot.
@@ -117,7 +117,7 @@ Diagnostics:
 ```bash
 docker compose logs -f
 docker compose ps
-docker inspect proxycache --format='{{.State.Health.Status}}'
+docker inspect llama-kv-proxy --format='{{.State.Health.Status}}'
 ```
 
 ## Configuration
@@ -174,7 +174,7 @@ All parameters are environment variables; defaults in parentheses.
 | File | Purpose |
 |---|---|
 | `app.py` | FastAPI app: chat endpoint, streaming, pass-through, background loops (eviction, slot polling, `.bin` cleanup/reconcile) |
-| `proxycache.py` | uvicorn entry point |
+| `llama_kv_proxy.py` | uvicorn entry point |
 | `config.py` | Environment configuration |
 | `slot_manager.py` | Slot pools, LRU marks, per-slot locks, restore/save |
 | `llama_client.py` | HTTP client for llama.cpp: chat, slot save/restore/erase, models, metrics |
@@ -198,3 +198,7 @@ ruff check .
 - **Multi-backend:** see the note in Configuration — keep all backends on the same model, or always send `model`.
 - **`.bin` cleanup requires a mount.** llama.cpp has no delete endpoint; without mounting `--slot-save-path` and setting `BIN_CACHE_DIR`, `.bin` files are only purged best-effort via the (mostly no-op) `DELETE /slots` fallback.
 - **`ERASE_BEFORE_SMALL` is off by default** until verified against the target build (some builds auto-clear on a prompt mismatch, in which case it is redundant).
+
+## Acknowledgments / Inspiration
+
+This project was inspired by and initially built upon concepts from [airnsk/proxycache](https://github.com/airnsk/proxycache).

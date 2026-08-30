@@ -1,7 +1,7 @@
 services:
-  proxycache:
+  llama-kv-proxy:
     build: .
-    container_name: proxycache
+    container_name: llama-kv-proxy
     restart: unless-stopped
     ports:
       - "8080:8080"
