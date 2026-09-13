@@ -156,6 +156,37 @@ async def test_successful_save_refreshes_usage(sm, monkeypatch):
         sm.release(g)
 
 
+@pytest.mark.asyncio
+async def test_waiters_repick_on_release_no_pileup(sm):
+    """2 slots, 2 holders, 4 waiters: releasing both slots must let two
+    waiters re-pick and proceed. The old code queued every waiter on the
+    oldest slot's lock, so only one waiter woke and the other slot idled."""
+    g1, _, _ = await sm.acquire_for_request("model1")
+    g2, _, _ = await sm.acquire_for_request("model1")
+    assert g1 != g2
+
+    waiters = [asyncio.create_task(sm.acquire_for_request("model1")) for _ in range(4)]
+    for _ in range(10):
+        await asyncio.sleep(0.01)  # let all waiters park
+    assert len(sm._waiters.get("model1", ())) == 4, "all 4 must be waiting"
+
+    sm.release(g1)
+    sm.release(g2)
+    done, pending = await asyncio.wait(waiters, timeout=2.0)
+    assert len(done) == 2, f"both freed slots must be taken, done={len(done)}"
+
+    for t in done:
+        sm.release(t.result()[0])
+    done2, pending2 = await asyncio.wait(list(pending), timeout=2.0)
+    assert not pending2, "no waiter may stay asleep while a slot is free"
+    for t in done2:
+        sm.release(t.result()[0])
+
+    for g, lock in sm._locks.items():
+        assert not lock.locked(), f"slot {g} leaked"
+    assert not sm._waiters.get("model1"), "no waiter may remain registered"
+
+
 def test_oldest_slot_selected_by_usage(sm):
     """With no free slots, the least recently used one is selected."""
     sm._last_used[(0, "model1", 0)] = 1000.0

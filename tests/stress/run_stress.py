@@ -34,7 +34,6 @@ import re
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -116,7 +115,7 @@ class Harness:
         self.px_port = free_port()
         self.be_url = f"http://127.0.0.1:{self.be_port}"
         self.px_url = f"http://127.0.0.1:{self.px_port}"
-        self.tmp = tempfile.mkdtemp(prefix="stress_")
+        self.tmp = os.path.join("/tmp/opencode", f"stress_{int(time.time())}")
         os.makedirs(os.path.join(self.tmp, "meta"), exist_ok=True)
         self.be_proc: subprocess.Popen | None = None
         self.px_proc: subprocess.Popen | None = None

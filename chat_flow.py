@@ -310,6 +310,7 @@ async def _background_save(
     finally:
         # Release is guaranteed: a synchronous call that cannot be
         # interrupted; it runs even if a re-cancellation interrupts the save.
+        log.info("slot_release g=%s key=%s via=bg_save", g, key[:16])
         sm.release(g)
 
 
@@ -468,6 +469,7 @@ async def start_stream_task(
             finally:
                 # Release is guaranteed: a synchronous call that cannot be
                 # interrupted; it runs even if a re-cancellation interrupts the save.
+                log.info("slot_release g=%s key=%s via=stream", g, key[:16])
                 sm.release(g)
             # Sentinel with bounded wait: if there is no consumer, do not
             # block (the slot is already released).
@@ -584,7 +586,7 @@ async def chat_flow(
             status_code=503,
         )
 
-    log.info("after_acquire g=%s restored=%s", g, restored)
+    log.info("after_acquire g=%s key=%s restored=%s", g, key[:16], restored)
 
     # A restore is only attempted when restore_key is set, so both branches
     # below imply restore_key is a non-None string.
@@ -743,4 +745,5 @@ async def chat_flow(
         return JSONResponse({"error": str(e)}, status_code=500)
     finally:
         if not task_owns_slot:
+            log.info("slot_release g=%s key=%s via=finally", g, key[:16])
             sm.release(g)
