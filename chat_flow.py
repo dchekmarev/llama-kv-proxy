@@ -288,8 +288,12 @@ async def start_stream_task(
                 except asyncio.TimeoutError:
                     # Consumer gone (the queue is not drained): stop pushing
                     # and move on to cleanup. The stream was not read to the
-                    # end, so the KV cache must not be saved.
+                    # end, so the KV cache must not be saved. Signal the
+                    # truncation via the single error-event push site in the
+                    # finally below (bounded wait; dropped if the consumer is
+                    # still stalled).
                     push_failed = True
+                    error_reason = "consumer stalled: stream aborted after waiting for client"
                     log.warning("stream_reader_put_timeout g=%s key=%s", g, key[:16])
                     break
                 if decoder is not None:

@@ -370,6 +370,59 @@ async def test_reader_task_kept_alive_until_done(sm, no_meta):
 
 
 @pytest.mark.asyncio
+async def test_put_timeout_emits_error_event_before_sentinel(sm, no_meta, monkeypatch):
+    """A stalled consumer (queue never drained) must cause the reader to emit
+    an SSE error event before the sentinel, so the client can tell the stream
+    was truncated."""
+    # Capture the queue instance (owned by start_stream_task's frame) so its
+    # contents can be inspected after the reader finishes.
+    queue_ref: dict = {}
+    real_queue = asyncio.Queue
+
+    def capturing_queue(*args, **kwargs):
+        q = real_queue(*args, **kwargs)
+        queue_ref["q"] = q
+        return q
+
+    monkeypatch.setattr(chat_flow.asyncio, "Queue", capturing_queue)
+    monkeypatch.setattr(chat_flow, "STREAM_PUT_TIMEOUT", 1.0)
+    g = (0, "model", 0)
+    lock = await _acquire(sm, g)
+    chunks = [b"c%d" % i for i in range(40)]
+    resp = FakeResp(chunks, delay=0.05)
+
+    _ = await chat_flow.start_stream_task(
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+    )
+
+    # Stalled consumer: drain a few items, then stop draining so the queue
+    # fills and the reader's put times out (~t=2.0). Only after the timeout,
+    # free two slots (one for the SSE error event, one for the sentinel) and
+    # stall again; freeing them earlier would let the reader push more chunks.
+    q = queue_ref["q"]
+    for _ in range(4):
+        await q.get()
+    await asyncio.sleep(2.1)
+    for _ in range(2):
+        await q.get()
+    await asyncio.sleep(2.0)
+
+    assert not lock.locked(), "slot must be released when the consumer stalled"
+    assert resp.closed
+    items = []
+    while not q.empty():
+        items.append(q.get_nowait())
+    assert items and items[-1] is None, "the last queued item must be the sentinel"
+    err = items[-2]
+    assert err.startswith(b"data: ") and err.endswith(b"\n\n"), (
+        "the item before the sentinel must be the SSE error event"
+    )
+    payload = json.loads(err[len(b"data: "):-2])
+    assert "error" in payload
+    assert "stream interrupted" in payload["error"]
+
+
+@pytest.mark.asyncio
 async def test_put_timeout_does_not_save_partial_stream(sm, monkeypatch):
     """A queue put timeout means the stream was not read to the end: the
     partial KV cache must not be saved."""
