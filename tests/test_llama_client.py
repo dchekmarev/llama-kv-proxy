@@ -2,6 +2,7 @@
 
 """P0-4: model_id must be cached with a TTL and fetched with a short timeout."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -74,3 +75,91 @@ async def test_get_model_id_uses_short_timeout():
     kwargs = c.client.get.call_args.kwargs
     assert "timeout" in kwargs, "/v1/models must use an explicit short timeout"
     assert kwargs["timeout"] <= 10, f"timeout too large: {kwargs['timeout']}"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_expired_callers_singleflight():
+    """N concurrent callers on an expired cache must trigger exactly ONE fetch."""
+    c = make_client()
+    c.client.get = AsyncMock(return_value=fake_models_resp("m1"))
+    await c.get_model_id_cached()
+    c._model_id_at -= config.MODEL_ID_TTL + 1  # expire the cache
+
+    calls = []
+
+    async def counted():
+        calls.append(1)
+        await asyncio.sleep(0.05)
+        return "m1"
+
+    c.get_model_id = counted
+    results = await asyncio.gather(*[c.get_model_id_cached() for _ in range(8)])
+    assert len(calls) == 1, f"expected exactly one fetch, got {len(calls)}"
+    assert all(r == "m1" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_singleflight_failure_propagates_and_retries():
+    """A failed fetch must propagate to all waiters and be retried next call."""
+    c = make_client()
+    c.client.get = AsyncMock(return_value=fake_models_resp("m1"))
+    await c.get_model_id_cached()
+    c._model_id_at -= config.MODEL_ID_TTL + 1  # expire the cache
+
+    async def failing():
+        await asyncio.sleep(0.05)
+        raise RuntimeError("backend down")
+
+    c.get_model_id = failing
+    with pytest.raises(RuntimeError):
+        await asyncio.gather(*[c.get_model_id_cached() for _ in range(3)])
+
+    # The in-flight state must be cleared: the next call retries the fetch.
+    async def ok():
+        await asyncio.sleep(0.01)
+        return "m1"
+
+    c.get_model_id = ok
+    assert await c.get_model_id_cached() == "m1"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_fetcher_clears_inflight_and_allows_retry():
+    """Cancelling the fetcher mid-flight must clear _model_id_inflight so a
+    subsequent call does not hang on a dangling pending Future."""
+    c = make_client()
+    c.client.get = AsyncMock(return_value=fake_models_resp("m1"))
+    await c.get_model_id_cached()
+    c._model_id_at -= config.MODEL_ID_TTL + 1  # expire the cache
+
+    async def slow():
+        await asyncio.sleep(5)
+        return "m1"
+
+    c.get_model_id = slow
+    fetcher = asyncio.create_task(c.get_model_id_cached())
+    await asyncio.sleep(0.05)  # let the fetcher start and create the Future
+    assert c._model_id_inflight is not None
+    fetcher.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await fetcher
+
+    assert c._model_id_inflight is None, "in-flight Future must be cleared on cancellation"
+
+    # A subsequent call must not hang on the dangling Future.
+    async def ok():
+        await asyncio.sleep(0.01)
+        return "m1"
+
+    c.get_model_id = ok
+    assert await asyncio.wait_for(c.get_model_id_cached(), timeout=1.0) == "m1"
+
+
+@pytest.mark.asyncio
+async def test_fresh_cache_fast_path_no_fetch():
+    """A fresh cache must return immediately without any fetch."""
+    c = make_client()
+    c.client.get = AsyncMock(return_value=fake_models_resp("m1"))
+    assert await c.get_model_id_cached() == "m1"
+    assert await c.get_model_id_cached() == "m1"
+    assert c.client.get.await_count == 1
