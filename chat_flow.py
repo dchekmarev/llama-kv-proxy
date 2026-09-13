@@ -22,6 +22,9 @@ Additionally:
       even on re-cancellation) and puts a sentinel None into the queue (with
       bounded wait); save_after + write_meta — only if the stream was read to
       the end and the save succeeded;
+    * on a mid-stream backend error the reader pushes an SSE error event
+      (data: {"error": "stream interrupted: ..."}) before the sentinel, so
+      the client can distinguish a truncated stream from a normal one;
     * when the generator is closed (client disconnect) the reader is
       cancelled;
     * reader tasks are kept by strong references (_READER_TASKS) so they are
@@ -266,6 +269,13 @@ async def start_stream_task(
         # wastes disk.
         completed = False
         push_failed = False
+        # Set when the stream was interrupted by a backend failure (any
+        # exception, including a CancelledError raised from inside
+        # resp.aiter_raw() by a transport/backend cancel): the finally below
+        # then pushes the SSE error event. A client-disconnect cancellation
+        # (gen's finally cancels the reader task) leaves this unset: the
+        # client is already gone, so no error event is emitted.
+        error_reason: str | None = None
         decoder = codecs.getincrementaldecoder("utf-8")() if is_big else None
         sse_buffer = ""
         response_parts: list[str] = []
@@ -293,11 +303,50 @@ async def start_stream_task(
                     _append_stream_content(sse_buffer, response_parts)
             completed = not push_failed
         except asyncio.CancelledError:
-            log.warning("stream_reader_cancelled g=%s key=%s", g, key[:16])
+            # Distinguish the two cancellation sources: a client disconnect
+            # cancels this task from outside (gen's finally), so the task's
+            # cancel counter is > 0; a backend/transport cancel raises
+            # CancelledError from inside resp.aiter_raw() with no external
+            # cancel(), so the counter is 0. Only the latter is a mid-stream
+            # failure to signal (on a disconnect the client is already gone
+            # and a push would just hit the bounded-wait timeout).
+            task = asyncio.current_task()
+            externally_cancelled = task is not None and task.cancelling() > 0
+            if not externally_cancelled:
+                error_reason = "stream cancelled by backend"
+            log.warning(
+                "stream_reader_cancelled g=%s key=%s external=%s",
+                g,
+                key[:16],
+                externally_cancelled,
+            )
             raise
-        except Exception:
+        except Exception as e:
             log.exception("stream_reader_error g=%s key=%s", g, key[:16])
+            error_reason = str(e)
         finally:
+            # Signal the mid-stream failure to the client exactly once (single
+            # push site, guarded by error_reason): without this the stream
+            # would end silently (no [DONE], no error) and the client could
+            # not distinguish a truncated stream from a normal one.
+            if error_reason is not None:
+                try:
+                    payload = json.dumps(
+                        {"error": f"stream interrupted: {error_reason}"}
+                    )
+                    await asyncio.wait_for(
+                        queue.put(f"data: {payload}\n\n".encode()),
+                        timeout=STREAM_PUT_TIMEOUT,
+                    )
+                except Exception as push_err:  # noqa: BLE001
+                    # No consumer left (put timed out) or encoding failed:
+                    # nothing to signal; proceed to cleanup.
+                    log.warning(
+                        "stream_error_event_failed g=%s key=%s: %s",
+                        g,
+                        key[:16],
+                        push_err,
+                    )
             try:
                 try:
                     await resp.aclose()

@@ -12,6 +12,7 @@ Scenarios:
 
 import asyncio
 import gc
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -83,15 +84,31 @@ async def test_normal_stream_delivers_all_and_releases(sm, no_meta):
     received = [c async for c in gen]
 
     assert received == chunks
+    assert not any(c.startswith(b"data: ") and b'"error"' in c for c in received), (
+        "clean completion must not emit an error event"
+    )
     assert resp.closed
     assert not lock.locked(), "slot must be released after normal stream completion"
     sm.backends[0]["client"].save_slot.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_slot_released_when_client_disconnects(sm, no_meta):
+async def test_slot_released_when_client_disconnects(sm, no_meta, monkeypatch):
     """Client disconnect: gen is closed early; the reader must not block on a
     full queue and must release the slot."""
+    # Capture the queue instance so its contents can be inspected after the
+    # reader task is cancelled (the queue is owned by start_stream_task's
+    # frame and is not reachable from the generator).
+    queue_ref: dict = {}
+    real_queue = asyncio.Queue
+
+    def capturing_queue(*args, **kwargs):
+        q = real_queue(*args, **kwargs)
+        queue_ref["q"] = q
+        return q
+
+    monkeypatch.setattr(chat_flow.asyncio, "Queue", capturing_queue)
+
     g = (0, "model", 0)
     lock = await _acquire(sm, g)
     chunks = [b"c%d" % i for i in range(64)]
@@ -112,6 +129,18 @@ async def test_slot_released_when_client_disconnects(sm, no_meta):
 
     assert not lock.locked(), "slot lock leaked after client disconnect"
     assert resp.closed
+    # Cancellation is not a backend error: no error event may be queued.
+    # The queue is owned by start_stream_task's frame (kept alive by the
+    # reader task until it finishes), so wrap asyncio.Queue to capture the
+    # reference and inspect its contents after the reader is cancelled.
+    assert queue_ref["q"] is not None, "queue reference must be captured"
+    queued = []
+    while not queue_ref["q"].empty():
+        queued.append(queue_ref["q"].get_nowait())
+    assert not any(
+        c is not None and c.startswith(b"data: ") and b'"error"' in c
+        for c in queued
+    ), "client-disconnect cancellation must not emit an error event"
 
 
 @pytest.mark.asyncio
@@ -147,9 +176,63 @@ async def test_backend_error_mid_stream_releases_slot(sm, no_meta):
 
     received = [c async for c in gen]
 
-    assert received == [b"a", b"b"]
+    assert received[:2] == [b"a", b"b"]
+    assert len(received) == 3, "mid-stream error must yield an SSE error event"
+    err = received[2]
+    assert err.startswith(b"data: ") and err.endswith(b"\n\n")
+    payload = json.loads(err[len(b"data: "):-2])
+    assert "error" in payload
+    assert "stream interrupted" in payload["error"]
     assert resp.closed
     assert not lock.locked(), "slot must be released when backend stream errors"
+
+
+class CancelResp:
+    """Backend that cancels its own stream mid-way: aiter_raw raises
+    asyncio.CancelledError after the first chunk (simulates a transport or
+    backend cancel surfacing as CancelledError inside the reader)."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.closed = False
+
+    async def aiter_raw(self):
+        for i, c in enumerate(self._chunks):
+            if i == 1:
+                raise asyncio.CancelledError()
+            yield c
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_backend_cancel_mid_stream_emits_error_event(sm, no_meta):
+    """A CancelledError raised from inside resp.aiter_raw() is a backend
+    failure, not a client disconnect: the reader must still push the SSE
+    error event before the sentinel (regression: the cancel path used to
+    re-raise silently and truncate the stream)."""
+    g = (0, "model", 0)
+    lock = await _acquire(sm, g)
+    resp = CancelResp([b"a", b"b", b"c"])
+
+    gen = await chat_flow.start_stream_task(
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+    )
+
+    received = [c async for c in gen]
+
+    assert received[:1] == [b"a"]
+    assert len(received) == 2, (
+        "backend cancel mid-stream must yield an SSE error event"
+    )
+    err = received[1]
+    assert err.startswith(b"data: ") and err.endswith(b"\n\n")
+    payload = json.loads(err[len(b"data: "):-2])
+    assert "error" in payload
+    assert "stream interrupted" in payload["error"]
+    assert resp.closed
+    assert not lock.locked(), "slot must be released when backend cancels the stream"
 
 
 @pytest.mark.asyncio
