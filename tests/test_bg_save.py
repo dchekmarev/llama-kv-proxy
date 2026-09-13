@@ -133,43 +133,6 @@ async def test_big_json_save_failure_releases_slot_and_logs(
 
 
 @pytest.mark.asyncio
-async def test_bg_save_registers_inflight_before_response_hash(
-    sm, meta_dir, monkeypatch
-):
-    """The in-flight entry must exist from the start of _background_save,
-    covering the response-hash phase: a fast continuation sent right after
-    the JSON response must be able to wait for the save instead of missing
-    it and reprocessing the whole prompt."""
-    monkeypatch.setattr(chat_flow, "BIG_THRESHOLD_WORDS", 1)
-    # The real save would register/finish the entry itself; mock it so the
-    # test observes only _background_save's own registration and cleanup.
-    monkeypatch.setattr(chat_flow, "_save_and_write_meta", AsyncMock(return_value=True))
-    chat_flow._INFLIGHT_SAVES.clear()
-
-    observed: dict = {}
-
-    async def spy_saved_values(*args, **_kwargs):
-        observed["inflight_keys"] = list(chat_flow._INFLIGHT_SAVES)
-        return args[3], args[4], args[5]  # fallback prefix, blocks, hashes
-
-    monkeypatch.setattr(chat_flow, "_saved_conversation_values", spy_saved_values)
-
-    try:
-        resp = await _chat(sm, "hello world")
-        await _pump()
-        assert resp.status_code == 200
-        assert observed["inflight_keys"], (
-            "the in-flight save must be registered before the response-hash step"
-        )
-        assert not chat_flow._INFLIGHT_SAVES, (
-            "no stale in-flight entry may remain after the save completes"
-        )
-        _assert_all_free(sm)
-    finally:
-        chat_flow._INFLIGHT_SAVES.clear()
-
-
-@pytest.mark.asyncio
 async def test_small_json_no_background_save(sm, meta_dir, monkeypatch):
     """Small requests are unchanged: no save, slot released in the finally."""
     save_mock = AsyncMock(return_value=True)

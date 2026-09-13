@@ -13,6 +13,9 @@ Additionally:
 
 - acquire_for_request is wrapped in a timeout so it cannot hang forever if a
   slot is never released.
+- For non-streaming big requests the save+meta runs in a background task
+  (_BG_SAVE_TASKS) after the JSON response is returned, so the .bin write
+  does not add latency to the response; the task owns and releases the slot.
 - For streaming:
     * reading from llama.cpp happens in a separate background task (the
       reader);
@@ -73,6 +76,10 @@ _READER_TASKS: "set[asyncio.Task]" = set()
 # and a guard against concurrent checks racing on the same files.
 _LRU_TASKS: "set[asyncio.Task]" = set()
 _lru_check_in_flight = False
+
+# Strong references to in-flight non-stream background save tasks (same GC
+# reason as _READER_TASKS): the .bin write must not delay the JSON response.
+_BG_SAVE_TASKS: "set[asyncio.Task]" = set()
 
 
 def _assistant_content(out: dict) -> str:
@@ -245,6 +252,65 @@ async def _save_and_write_meta(
             log.warning("delete_subsumed_exception key=%s: %s", key[:16], e)
     _schedule_lru_check()
     return True
+
+
+async def _background_save(
+    clients: list[LlamaClient],
+    sm: SlotManager,
+    g: GSlot,
+    key: str,
+    prefix: str,
+    blocks: list[str],
+    prefix_hashes: list[str],
+    model_id: str,
+    messages: list[dict],
+    response_text: str,
+) -> None:
+    """Non-stream big-request save+meta, run after the response is returned.
+
+    The hundreds-of-MB .bin write must not add latency to the JSON response,
+    so it runs in a background task (mirroring the stream reader's finally).
+    The task owns the slot: it releases it in the finally, even if the save
+    or the meta write raises (the client already has its response, so the
+    error is only logged).
+    """
+    try:
+        try:
+            saved_prefix, saved_blocks, saved_hashes = (
+                await _saved_conversation_values(
+                    messages,
+                    response_text,
+                    model_id,
+                    prefix,
+                    blocks,
+                    prefix_hashes,
+                )
+            )
+        except Exception as e:  # noqa: BLE001
+            log.warning("saved_conversation_values_fail key=%s: %s", key[:16], e)
+            saved_prefix, saved_blocks, saved_hashes = (
+                prefix,
+                blocks,
+                prefix_hashes,
+            )
+        ok = await _save_and_write_meta(
+            clients,
+            sm,
+            g,
+            key,
+            saved_prefix,
+            saved_blocks,
+            prefix_hashes,
+            model_id,
+            saved_hashes,
+        )
+        log.info("bg_save_done g=%s key=%s saved=%s", g, key[:16], ok)
+    except Exception as e:  # noqa: BLE001
+        log.warning("background_save_error g=%s key=%s: %s", g, key[:16], e)
+    finally:
+        # Release is guaranteed: a synchronous call that cannot be
+        # interrupted; it runs even if a re-cancellation interrupts the save.
+        sm.release(g)
 
 
 async def start_stream_task(
@@ -572,8 +638,9 @@ async def chat_flow(
     # The slot is released exactly once per request:
     # - successful stream: the reader task releases it (the generator owns
     #   the slot from this point on);
+    # - successful big non-stream: the background save task releases it;
     # - every other path (errors, exceptions, cancellation): the finally below.
-    stream_owns_slot = False
+    task_owns_slot = False
     try:
         if stream:
             resp = await client.chat_completions(
@@ -602,7 +669,7 @@ async def chat_flow(
                 clients,
                 messages,
             )
-            stream_owns_slot = True
+            task_owns_slot = True
 
             headers = {
                 "Cache-Control": "no-cache",
@@ -639,47 +706,33 @@ async def chat_flow(
                     status_code=502,
                 )
 
-            ok = False
             if is_big:
-                # Save + meta + subsumed-meta cleanup (see the stream reader).
+                # Save + meta + subsumed-meta cleanup (see the stream reader)
+                # runs in the background: the .bin write must not delay the
+                # JSON response. The task owns the slot and releases it.
                 response_text = _assistant_content(out)
-                try:
-                    saved_prefix, saved_blocks, saved_hashes = (
-                        await _saved_conversation_values(
-                            messages,
-                            response_text,
-                            effective_model,
-                            prefix,
-                            blocks,
-                            prefix_hashes,
-                        )
-                    )
-                except Exception as e:  # noqa: BLE001
-                    log.warning(
-                        "saved_conversation_values_fail key=%s: %s", key[:16], e
-                    )
-                    saved_prefix, saved_blocks, saved_hashes = (
+                save_task = asyncio.create_task(
+                    _background_save(
+                        clients,
+                        sm,
+                        g,
+                        key,
                         prefix,
                         blocks,
                         prefix_hashes,
+                        effective_model,
+                        messages,
+                        response_text,
                     )
-                ok = await _save_and_write_meta(
-                    clients,
-                    sm,
-                    g,
-                    key,
-                    saved_prefix,
-                    saved_blocks,
-                    prefix_hashes,
-                    effective_model,
-                    saved_hashes,
                 )
+                _BG_SAVE_TASKS.add(save_task)
+                save_task.add_done_callback(_BG_SAVE_TASKS.discard)
+                task_owns_slot = True
 
             log.info(
-                "json_done g=%s key=%s saved=%s is_big=%s dur_ms=%d",
+                "json_done g=%s key=%s is_big=%s dur_ms=%d",
                 g,
                 key[:16],
-                ok,
                 is_big,
                 int((time.time() - t0) * 1000),
             )
@@ -689,5 +742,5 @@ async def chat_flow(
         log.exception("chat_error g=%s key=%s", g, key[:16])
         return JSONResponse({"error": str(e)}, status_code=500)
     finally:
-        if not stream_owns_slot:
+        if not task_owns_slot:
             sm.release(g)
