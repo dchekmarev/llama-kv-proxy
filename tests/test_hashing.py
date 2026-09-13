@@ -148,3 +148,125 @@ def test_saved_conversation_values_empty_response_keeps_prompt():
     assert prefix == hs.raw_prefix(messages)
     assert blocks == hs.block_hashes_from_text(prefix, 100)
     assert hashes == hs.prefix_hashes_from_messages(messages, "m1")
+
+
+def test_content_none_produces_no_none_artifact():
+    """content=None (common for assistant messages with tool_calls) must not
+    contribute a spurious 'None' text to the part."""
+    msgs = [{"role": "assistant", "content": None}]
+    assert hs._message_parts(msgs) == []
+    msgs_tc = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": "{}"},
+                }
+            ],
+        }
+    ]
+    parts = hs._message_parts(msgs_tc)
+    assert len(parts) == 1
+    assert "None" not in parts[0]
+
+
+def test_different_tool_calls_produce_different_keys():
+    """Two conversations identical except for the assistant's tool_calls must
+    produce different parts, prefix hashes and cache keys."""
+    base = [
+        {"role": "user", "content": "weather in paris"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"city": "paris"}'},
+                }
+            ],
+        },
+    ]
+    alt = [
+        {"role": "user", "content": "weather in paris"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "get_time", "arguments": '{"zone": "paris"}'},
+                }
+            ],
+        },
+    ]
+    assert hs._message_parts(base) != hs._message_parts(alt)
+    assert hs.raw_prefix(base) != hs.raw_prefix(alt)
+    h_base = hs.prefix_hashes_from_messages(base, "m1")
+    h_alt = hs.prefix_hashes_from_messages(alt, "m1")
+    assert h_base[-1] != h_alt[-1]
+
+
+def test_same_tool_calls_produce_identical_parts():
+    """Same tool_calls always produce the same part (determinism, sort_keys);
+    string-args and dict-args forms of the same call are equivalent."""
+    tc = [
+        {
+            "id": "c1",
+            "type": "function",
+            "function": {"name": "f", "arguments": '{"b": 2, "a": 1}'},
+        }
+    ]
+    m1 = [{"role": "assistant", "content": None, "tool_calls": tc}]
+    m2 = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": {"a": 1, "b": 2}},
+                }
+            ],
+        }
+    ]
+    assert hs._message_parts(m1) == hs._message_parts(m2)
+    assert hs.raw_prefix(m1) == hs.raw_prefix(m2)
+    assert hs.prefix_hashes_from_messages(m1, "m1") == hs.prefix_hashes_from_messages(m2, "m1")
+
+
+def test_different_tool_call_ids_produce_different_parts():
+    """Two tool-role messages with identical content but different
+    tool_call_id must produce different parts and cache keys (parallel
+    tool-call disambiguation)."""
+    msgs_a = [{"role": "tool", "tool_call_id": "call_A", "content": "42"}]
+    msgs_b = [{"role": "tool", "tool_call_id": "call_B", "content": "42"}]
+    assert hs._message_parts(msgs_a) != hs._message_parts(msgs_b)
+    assert hs.raw_prefix(msgs_a) != hs.raw_prefix(msgs_b)
+    assert (
+        hs.prefix_hashes_from_messages(msgs_a, "m1")[-1]
+        != hs.prefix_hashes_from_messages(msgs_b, "m1")[-1]
+    )
+
+
+def test_same_tool_call_id_produces_identical_part():
+    """Same tool_call_id always produces the same part (determinism)."""
+    msg = {"role": "tool", "tool_call_id": "call_A", "content": "42"}
+    assert hs._message_parts([msg]) == hs._message_parts([dict(msg)])
+    assert hs.raw_prefix([msg]) == hs.raw_prefix([dict(msg)])
+
+
+def test_plain_message_part_unchanged():
+    """Backward compat: a plain message with string content and no
+    tool_calls/name produces the same part as before the fix."""
+    msgs = [
+        {"role": "system", "content": "be nice"},
+        {"role": "user", "content": "hello"},
+    ]
+    assert hs._message_parts(msgs) == ["system:be nice", "user:hello"]
+    assert hs.raw_prefix(msgs) == "system:be nice\n\nuser:hello"
