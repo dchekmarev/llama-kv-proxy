@@ -691,6 +691,22 @@ async def chat_flow(
     client_model = data.get("model") or None
     if client_model:
         effective_model = client_model
+        # Model aliases: llama.cpp resolves aliases (e.g. "default") to the
+        # real loaded model, but the proxy discovers slot pools only under the
+        # real id (app._poll_slots). An alias would never find a pool and every
+        # such request would collapse onto the bootstrap slot (0, alias, 0) and
+        # cache into a separate namespace. When the requested model has no pool
+        # and exactly one model is detected, treat the request as that model so
+        # pooling, restore and cache keys are shared with real-name requests.
+        if not sm.has_pool(effective_model):
+            resolved = await clients[0].get_model_id_cached()
+            if resolved != "unknown" and sm.discovered_models() == {resolved}:
+                effective_model = resolved
+                log.info(
+                    "model_alias_resolved alias=%s resolved=%s",
+                    client_model,
+                    resolved,
+                )
     else:
         # TTL-cached model id: no per-request HTTP round-trip. "unknown"
         # (never resolved) falls back to MODEL_ID.

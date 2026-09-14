@@ -229,6 +229,7 @@ CI (`.github/workflows/ci.yml`) runs the same checks (ruff, mypy, pytest) on eve
 - **`.bin` cleanup requires a mount.** llama.cpp has no delete endpoint; without mounting `--slot-save-path` and setting `BIN_CACHE_DIR`, `.bin` files are only purged best-effort via the (mostly no-op) `DELETE /slots` fallback.
 - **`ERASE_BEFORE_SMALL` is off by default** until verified against the target build (some builds auto-clear on a prompt mismatch, in which case it is redundant).
 - **`REASONING_IN_KEY` is off by default.** Enabling it changes the cache key for every message carrying a reasoning field, so previously cached entries stop matching until re-cached (deliberate key churn, only when the flag is turned on).
+- **Model aliases.** A client `model` string with no discovered slot pool (e.g. an alias like `default` that llama.cpp resolves to the real model) is normalized to the single detected model id, so it shares the slot pool and cache namespace with real-name requests. When several models are detected the alias is left untouched (the proxy cannot know which one it maps to).
 
 ## Acknowledgments / Inspiration
 
