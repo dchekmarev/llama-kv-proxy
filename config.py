@@ -116,10 +116,10 @@ META_DIR = os.path.join(APP_DIR, os.getenv("META_DIR", "kv_meta"))
 os.makedirs(META_DIR, exist_ok=True)
 
 # HTTP timeout
-REQUEST_TIMEOUT = _env_float("REQUEST_TIMEOUT", 600)
+REQUEST_TIMEOUT = _env_float("REQUEST_TIMEOUT", 1500)
 
 # Timeout for waiting on a free slot when all slots are busy.
-ACQUIRE_TIMEOUT = _env_float("ACQUIRE_TIMEOUT", 300)
+ACQUIRE_TIMEOUT = _env_float("ACQUIRE_TIMEOUT", 1500)
 
 # Max seconds a big request waits for an in-flight save of a prefix of its own
 # conversation before giving up on the restore. The client treats [DONE] as the
@@ -189,7 +189,7 @@ ERASE_BEFORE_CHAT = _env_bool("ERASE_BEFORE_CHAT", True)
 # Watchdog: if a backend slot reports is_processing for longer than this many
 # seconds, it is presumed wedged (stuck in prompt processing) and is erased to
 # recover the backend without a restart. 0 disables the watchdog.
-STUCK_SLOT_THRESHOLD_S = _env_float("STUCK_SLOT_THRESHOLD_S", 300)
+STUCK_SLOT_THRESHOLD_S = _env_float("STUCK_SLOT_THRESHOLD_S", 1500)
 
 # Include the reasoning fields (reasoning_content / reasoning) in the
 # per-message cache-key parts and in the saved assistant response, so two
