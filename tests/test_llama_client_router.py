@@ -174,6 +174,60 @@ async def test_non_stream_http_error_surfaces_backend_body():
     assert out["object"] == "error"
     assert "500" in out["message"]
     assert "context length exceeded" in out["raw"]
+    assert out["status"] == 500
+
+
+@pytest.mark.asyncio
+async def test_non_stream_http_error_has_structured_status():
+    """M-8: the error body must carry the backend status as a structured field
+    so the caller can map 4xx vs 5xx without parsing the message text."""
+    c = make_client()
+    r = resp(400, {"error": "context length exceeded"})
+    r.raise_for_status = MagicMock(
+        side_effect=httpx.HTTPStatusError("err", request=MagicMock(), response=r)
+    )
+    c.client.post = AsyncMock(return_value=r)
+
+    out = await c.chat_completions({"messages": []}, slot_id=0, stream=False)
+
+    assert out["object"] == "error"
+    assert out["status"] == 400
+
+
+@pytest.mark.asyncio
+async def test_non_stream_non_json_has_status_502():
+    """M-8: a non-JSON body is a genuine upstream failure: status 502."""
+    c = make_client()
+    r = MagicMock()
+    r.status_code = 200
+    r.headers = {"content-type": "text/html"}
+    r.text = "<html>oops</html>"
+    r.raise_for_status = MagicMock()
+    c.client.post = AsyncMock(return_value=r)
+
+    out = await c.chat_completions({"messages": []}, slot_id=0, stream=False)
+
+    assert out["object"] == "error"
+    assert out["status"] == 502
+    assert out["raw"] == "<html>oops</html>"
+
+
+@pytest.mark.asyncio
+async def test_non_stream_invalid_json_has_status_502():
+    """M-8: an unparseable JSON body is a genuine upstream failure: 502."""
+    c = make_client()
+    r = MagicMock()
+    r.status_code = 200
+    r.headers = {"content-type": "application/json"}
+    r.text = "{not json"
+    r.json = MagicMock(side_effect=ValueError("bad json"))
+    r.raise_for_status = MagicMock()
+    c.client.post = AsyncMock(return_value=r)
+
+    out = await c.chat_completions({"messages": []}, slot_id=0, stream=False)
+
+    assert out["object"] == "error"
+    assert out["status"] == 502
 
 
 # --- delete_cache_file -----------------------------------------------------
