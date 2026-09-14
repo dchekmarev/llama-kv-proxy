@@ -94,6 +94,41 @@ _BG_SAVE_TASKS: "set[asyncio.Task]" = set()
 # instead of reprocessing the whole prompt.
 _INFLIGHT_SAVES: dict[str, asyncio.Event] = {}
 
+# Keys that big requests have selected for restore and are now waiting to
+# acquire a slot for (refcount of waiters per key). A concurrent save that
+# subsumes such a key deletes its .bin; the waiter must restore the longer
+# cache that superseded it instead (substitution), or the restore fails with
+# "file not found" and the whole prompt is reprocessed.
+_PENDING_RESTORES: dict[str, int] = {}
+# Deleted-key -> replacement-key for pending restores. Newer saves only alias
+# keys that are still awaited; once no waiter depends on a key its alias is
+# dropped (see _unregister_pending_restore).
+_RESTORE_ALIAS: dict[str, str] = {}
+
+
+def _register_pending_restore(key: str) -> None:
+    _PENDING_RESTORES[key] = _PENDING_RESTORES.get(key, 0) + 1
+
+
+def _unregister_pending_restore(key: str) -> None:
+    n = _PENDING_RESTORES.get(key, 0) - 1
+    if n <= 0:
+        _PENDING_RESTORES.pop(key, None)
+        # No waiter depends on the key anymore: its substitution (if any) is
+        # stale, drop it so the alias table cannot grow unbounded.
+        _RESTORE_ALIAS.pop(key, None)
+    else:
+        _PENDING_RESTORES[key] = n
+
+
+def _resolve_restore_key(key: str) -> str:
+    """Follow substitution aliases to the live cache a pending waiter must
+    restore. The chain is acyclic: each alias points to a longer conversation
+    that superseded the previous one."""
+    while key in _RESTORE_ALIAS:
+        key = _RESTORE_ALIAS[key]
+    return key
+
 
 def _register_inflight_save(key: str) -> None:
     _INFLIGHT_SAVES[key] = asyncio.Event()
@@ -391,6 +426,19 @@ async def _save_and_write_meta(
                     key, prefix_hashes, model_id
                 )
                 if deleted:
+                    # A deleted key that another big request is waiting to
+                    # restore maps to this longer cache (its meta and .bin are
+                    # already on disk): the waiter must restore it instead, or
+                    # the now-deleted .bin makes its restore fail. Alias BEFORE
+                    # the file is purged so a concurrent restore resolves it.
+                    for k in deleted:
+                        if _PENDING_RESTORES.get(k, 0) > 0:
+                            _RESTORE_ALIAS[k] = key
+                            log.info(
+                                "restore_substituted pending=%s replacement=%s",
+                                k[:16],
+                                key[:16],
+                            )
                     await _purge_backend_files(
                         clients or [], [(k, model_id) for k in deleted]
                     )
@@ -756,21 +804,34 @@ async def chat_flow(
         restore_key[:16] if restore_key else None,
     )
 
+    # Only a big request with a selected candidate can restore, so only it
+    # needs a pending entry: a concurrent subsumed deletion of its key must be
+    # able to substitute the replacement cache before the slot is acquired.
+    if is_big and restore_key is not None:
+        _register_pending_restore(restore_key)
     try:
-        g, _lock, restored = await asyncio.wait_for(
-            sm.acquire_for_request(effective_model, restore_key if is_big else None),
-            timeout=ACQUIRE_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        log.error(
-            "acquire_timeout is_big=%s restore_key=%s",
-            is_big,
-            restore_key[:16] if restore_key else None,
-        )
-        return JSONResponse(
-            {"error": "all slots busy, please retry later"},
-            status_code=503,
-        )
+        try:
+            g, _lock, restored = await asyncio.wait_for(
+                sm.acquire_for_request(
+                    effective_model,
+                    restore_key if is_big else None,
+                    resolve_restore_key=_resolve_restore_key if is_big else None,
+                ),
+                timeout=ACQUIRE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            log.error(
+                "acquire_timeout is_big=%s restore_key=%s",
+                is_big,
+                restore_key[:16] if restore_key else None,
+            )
+            return JSONResponse(
+                {"error": "all slots busy, please retry later"},
+                status_code=503,
+            )
+    finally:
+        if is_big and restore_key:
+            _unregister_pending_restore(restore_key)
 
     log.info("after_acquire g=%s key=%s restored=%s", g, key[:16], restored)
 

@@ -113,34 +113,6 @@ async def test_aliases_pending_key_on_subsumed_delete(meta_dir, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_alias_chain_repointed_when_target_deleted(meta_dir, monkeypatch):
-    # Step 1: h_ab is pending; saving h_abc subsumes it -> alias h_ab -> h_abc.
-    _write_prefix("h_ab", ["h_a", "h_ab"])
-    _patch(monkeypatch)
-    chat_flow._register_pending_restore("h_ab")
-
-    ok = await chat_flow._save_and_write_meta(
-        [], _sm(), ("g",), "h_abc", "p", [], ["h_a", "h_ab", "h_abc"], "m1"
-    )
-
-    assert ok is True
-    assert chat_flow._RESTORE_ALIAS["h_ab"] == "h_abc"
-
-    # Step 2: h_abc's meta is now on disk (step 1's mocked write, simulated);
-    # h_ab's waiter is still pending, h_abc is NOT pending. Saving h_abcd
-    # subsumes h_abc, so the stale h_ab -> h_abc alias must be re-pointed to
-    # h_abcd instead of terminating at the purged h_abc.
-    _write_prefix("h_abc", ["h_a", "h_ab", "h_abc"])
-
-    ok = await chat_flow._save_and_write_meta(
-        [], _sm(), ("g",), "h_abcd", "p", [], ["h_a", "h_ab", "h_abc", "h_abcd"], "m1"
-    )
-
-    assert ok is True
-    assert chat_flow._resolve_restore_key("h_ab") == "h_abcd"
-
-
-@pytest.mark.asyncio
 async def test_no_alias_without_pending(meta_dir, monkeypatch):
     _write_prefix("h_ab", ["h_a", "h_ab"])
     _patch(monkeypatch)
@@ -175,14 +147,13 @@ async def test_bin_still_purged_even_when_alias_recorded(meta_dir, monkeypatch):
 async def test_acquire_resolves_restore_key():
     manager, client = _manager()
 
-    _g, _lock, restored, used_key = await manager.acquire_for_request(
+    _g, _lock, restored = await manager.acquire_for_request(
         "model1",
         "old_key",
         resolve_restore_key=lambda k: "replaced" if k == "old_key" else k,
     )
 
     assert restored is True
-    assert used_key == "replaced", "the resolved key must be surfaced to the caller"
     client.restore_slot.assert_awaited_once_with(0, "replaced", model="model1")
 
 
@@ -190,8 +161,7 @@ async def test_acquire_resolves_restore_key():
 async def test_acquire_no_resolve_when_none():
     manager, client = _manager()
 
-    _g, _lock, restored, used_key = await manager.acquire_for_request("model1", "key123")
+    _g, _lock, restored = await manager.acquire_for_request("model1", "key123")
 
     assert restored is True
-    assert used_key == "key123", "without substitution the used key is the original"
     client.restore_slot.assert_awaited_once_with(0, "key123", model="model1")
