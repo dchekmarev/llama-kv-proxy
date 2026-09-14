@@ -156,6 +156,38 @@ async def test_cancelled_fetcher_clears_inflight_and_allows_retry():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_fetcher_waiters_survive_and_refetch():
+    """Cancelling only the fetcher (its client disconnected) must not kill the
+    concurrent waiters: they hold no slot and were not cancelled themselves,
+    so they must re-trigger a fresh fetch and get the model id."""
+    c = make_client()
+    c.client.get = AsyncMock(return_value=fake_models_resp("m1"))
+    await c.get_model_id_cached()
+    c._model_id_at -= config.MODEL_ID_TTL + 1  # expire the cache
+
+    fetches = 0
+
+    async def slow_then_fast():
+        nonlocal fetches
+        fetches += 1
+        if fetches == 1:
+            await asyncio.sleep(5)  # first fetch: long enough to be cancelled
+        await asyncio.sleep(0.01)
+        return "m1"
+
+    c.get_model_id = slow_then_fast
+    tasks = [asyncio.create_task(c.get_model_id_cached()) for _ in range(3)]
+    await asyncio.sleep(0.05)  # fetcher starts; waiters await the shared Future
+    assert c._model_id_inflight is not None
+    tasks[0].cancel()  # only the fetcher's client disconnects
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert isinstance(results[0], asyncio.CancelledError)
+    assert all(r == "m1" for r in results[1:]), f"waiters must survive: {results}"
+    assert fetches == 2, f"waiters must re-trigger exactly one fresh fetch: {fetches}"
+
+
+@pytest.mark.asyncio
 async def test_fresh_cache_fast_path_no_fetch():
     """A fresh cache must return immediately without any fetch."""
     c = make_client()
