@@ -1,8 +1,11 @@
 # tests/test_request_validation.py
 
-"""P3-5: 400 on invalid JSON body / non-object body, and roles included in
-the cache key (same content under different roles must not collide)."""
+"""P3-5: 400 on invalid JSON body / non-object body, M-9: 400 on wrong-typed
+`messages`/`model` fields (before hashing can crash them into a 500), and
+roles included in the cache key (same content under different roles must not
+collide)."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -56,6 +59,47 @@ async def test_non_dict_json_returns_400(sm):
     resp = await app_module.chat(FakeRequest([1, 2, 3]))
 
     assert resp.status_code == 400
+
+
+async def test_messages_string_returns_400(sm):
+    """A non-list `messages` becomes HTTP 400, not a 500 from hashing."""
+    resp = await app_module.chat(FakeRequest({"messages": "hello"}))
+
+    assert resp.status_code == 400
+    assert "messages" in json.loads(resp.body)["error"]
+
+
+async def test_messages_dict_returns_400(sm):
+    """A dict `messages` (iterates to its keys) becomes HTTP 400."""
+    resp = await app_module.chat(FakeRequest({"messages": {"a": 1}}))
+
+    assert resp.status_code == 400
+
+
+async def test_messages_non_dict_item_returns_400(sm):
+    """A list item that is not an object becomes HTTP 400."""
+    resp = await app_module.chat(FakeRequest({"messages": ["str"]}))
+
+    assert resp.status_code == 400
+
+
+async def test_model_non_string_returns_400(sm):
+    """A non-string `model` becomes HTTP 400, not a 500 from hashing."""
+    resp = await app_module.chat(
+        FakeRequest({"model": 123, "messages": [{"role": "user", "content": "hi"}]})
+    )
+
+    assert resp.status_code == 400
+    assert "model" in json.loads(resp.body)["error"]
+
+
+async def test_valid_body_passes_field_validation(sm):
+    """A well-typed body is not rejected by the field validation."""
+    resp = await app_module.chat(
+        FakeRequest({"messages": [{"role": "user", "content": "hi"}]})
+    )
+
+    assert resp.status_code == 200
 
 
 def test_raw_prefix_includes_roles():
