@@ -522,20 +522,19 @@ async def chat_flow(
         mid = await clients[0].get_model_id_cached()
         effective_model = mid if mid != "unknown" else MODEL_ID
 
-    prefix = hs.raw_prefix(messages)
-    full_for_key = effective_model + "\n" + prefix
-    key = hs.prefix_key_sha256(full_for_key)
-    blocks = hs.block_hashes_from_text(prefix, WORDS_PER_BLOCK)
-    n_words = len(hs.words_from_text(prefix))
+    # All request-side prefix values in one pass, off the event loop: the
+    # words are tokenized once (blocks + word count share them) and the
+    # per-message prefix hashes are computed incrementally (O(n), not O(n^2)).
+    prefix, key, blocks, prefix_hashes, n_words = await hs.request_prefix_values_async(
+        messages, effective_model, WORDS_PER_BLOCK
+    )
     is_big = n_words > BIG_THRESHOLD_WORDS
 
     # Per-message prefix hashes (last == key): the meta is findable by any of
     # its prefixes, and a continuation supersedes its strict prefixes. Only
-    # big requests restore or save, so compute them lazily (O(n^2) in messages).
-    prefix_hashes: list[str] = []
+    # big requests restore or save, so the candidate search is lazy.
     restore_key: str | None = None
     if is_big:
-        prefix_hashes = hs.prefix_hashes_from_messages(messages, effective_model)
         cand = await hs.find_best_restore_candidate_async(
             prefix_hashes,
             blocks,
