@@ -51,6 +51,7 @@ from config import (
     BIG_THRESHOLD_WORDS,
     BIN_CACHE_DIR,
     BIN_CACHE_MAX_MB,
+    MIN_BIN_SIZE_VALID,
     ERASE_BEFORE_CHAT,
     LCP_TH,
     MODEL_ID,
@@ -349,6 +350,22 @@ async def _save_and_write_meta(
         if not ok:
             return False
         bin_size = bin_cache.get_bin_size(BIN_CACHE_DIR, key) if BIN_CACHE_DIR else None
+        if (
+            bin_size is not None
+            and MIN_BIN_SIZE_VALID > 0
+            and bin_size < MIN_BIN_SIZE_VALID * 1024 * 1024
+        ):
+            log.warning(
+                "save_empty_capture g=%s key=%s bin_size=%d discard",
+                g,
+                key[:16],
+                bin_size,
+            )
+            try:
+                bin_cache.delete_bin_file(BIN_CACHE_DIR, key)
+            except Exception:  # noqa: BLE001
+                pass
+            return False
         meta_written = False
         try:
             await hs.write_meta_async(

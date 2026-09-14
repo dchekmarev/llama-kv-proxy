@@ -128,3 +128,32 @@ async def test_falls_back_to_prompt_hashes_when_saved_missing(meta_dir, monkeypa
     args = write_mock.await_args.args
     assert args[7] == ["req_h"]
     delete_mock.assert_awaited_once_with("key", ["req_h"], "m1")
+
+
+@pytest.mark.asyncio
+async def test_discards_empty_capture_and_keeps_subsumed(meta_dir, monkeypatch):
+    """A header-only .bin (empty slot capture, e.g. slot erased mid-generation)
+    must not be recorded as a meta and must not delete the valid shorter
+    caches."""
+    _write_prefix("h_ab", ["h_a", "h_ab"])
+
+    write_mock = AsyncMock()
+    delete_mock = AsyncMock()
+    del_bin_mock = MagicMock()
+    monkeypatch.setattr(hs, "write_meta_async", write_mock)
+    monkeypatch.setattr(hs, "delete_subsumed_metas_async", delete_mock)
+    monkeypatch.setattr(chat_flow, "_schedule_lru_check", lambda: None)
+    monkeypatch.setattr(chat_flow, "_purge_backend_files", AsyncMock())
+    monkeypatch.setattr(chat_flow, "BIN_CACHE_DIR", "/tmp/bin")
+    monkeypatch.setattr(bin_cache, "get_bin_size", lambda d, k: 1200)
+    monkeypatch.setattr(bin_cache, "delete_bin_file", del_bin_mock)
+
+    ok = await chat_flow._save_and_write_meta(
+        [], _sm(), ("g",), "h_abc", "p", [], ["h_a", "h_ab", "h_abc"], "m1"
+    )
+
+    assert ok is False, "an empty capture must not count as a save"
+    write_mock.assert_not_awaited()
+    delete_mock.assert_not_awaited()
+    del_bin_mock.assert_called_once()
+    assert (meta_dir / "h_ab.meta.json").exists(), "subsumed meta must be kept"

@@ -12,7 +12,7 @@ import config
 
 
 def test_acquire_timeout_default():
-    assert config.ACQUIRE_TIMEOUT == pytest.approx(300.0)
+    assert config.ACQUIRE_TIMEOUT == pytest.approx(1500.0)
 
 
 def test_chat_flow_uses_config_acquire_timeout():

@@ -169,6 +169,12 @@ BIN_RECONCILE_INTERVAL_S = _env_float("BIN_RECONCILE_INTERVAL_S", 600)
 # written yet) and is skipped by the LRU cleanup and orphan reconciliation, so
 # a just-saved .bin is not deleted before its meta lands. 0 disables the guard.
 BIN_SAVE_GRACE_S = _env_float("BIN_SAVE_GRACE_S", 10)
+# Minimum size (MB) of a .bin save to count as a real slot save. llama.cpp
+# writes only a small header file when the slot's KV cache is empty (e.g. the
+# slot was erased mid-generation); recording a meta for such a save poisons the
+# cache chain with an empty restore target and deletes the valid shorter
+# caches via the subsumed-metas logic. 0 disables the check.
+MIN_BIN_SIZE_VALID = _env_int("MIN_BIN_SIZE_VALID", 1)
 
 # Clear a slot's in-memory KV cache (action=erase) before dispatching a small
 # (non-cached) request, so it does not start on top of another conversation's
