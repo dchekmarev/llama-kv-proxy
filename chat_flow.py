@@ -13,18 +13,19 @@ Additionally:
 
 - acquire_for_request is wrapped in a timeout so it cannot hang forever if a
   slot is never released.
-- For non-streaming big requests the save+meta runs in a background task
-  (_BG_SAVE_TASKS) after the JSON response is returned, so the .bin write
-  does not add latency to the response; the task owns and releases the slot.
+- For non-streaming and streaming big requests the save+meta runs in a
+  background task (_BG_SAVE_TASKS), so the .bin write does not add latency
+  and survives a client disconnect (the task owns and releases the slot).
 - For streaming:
     * reading from llama.cpp happens in a separate background task (the
       reader);
     * the reader pushes chunks into an asyncio.Queue (put with bounded wait,
       so it cannot block forever when the consumer is gone);
-    * in its finally the reader always does release(g) (release is guaranteed
-      even on re-cancellation) and puts a sentinel None into the queue (with
-      bounded wait); save_after + write_meta — only if the stream was read to
-      the end and the save succeeded;
+    * on a big-completed stream the reader hands off the slot to a detached
+      _background_save task (which releases it in its own finally); on any
+      other path the reader releases the slot itself;
+    * a sentinel None is pushed into the queue (with bounded wait) after the
+      slot is released or handed off;
     * on a mid-stream backend error the reader pushes an SSE error event
       (data: {"error": "stream interrupted: ..."}) before the sentinel, so
       the client can distinguish a truncated stream from a normal one;
@@ -590,62 +591,59 @@ async def start_stream_task(
                         key[:16],
                         push_err,
                     )
+            # --- slot ownership transfer ---
+            # A big completed stream must save the KV cache, but the save
+            # cannot run inline here: a client disconnect (hermes closes the
+            # SSE connection after receiving content) cancels the reader
+            # task, and the CancelledError raised at a save await point
+            # (_saved_conversation_values / _save_and_write_meta) silently
+            # kills the save — no .bin or meta is written and every next
+            # request reprocesses from scratch.  Mirror the non-stream path
+            # (see _background_save): hand off the slot to a detached task
+            # that owns the lock and releases it in its own finally.
+            handed_off = False
             try:
                 try:
                     await resp.aclose()
                 except Exception:  # noqa: BLE001, S110
                     pass
-                ok = False
-                # Save and meta only for big requests: small ones must not
-                # pollute the disk cache.
                 if completed and is_big:
-                    response_text = "".join(response_parts)
-                    response_reasoning = "".join(reasoning_parts or [])
-                    try:
-                        saved_prefix, saved_blocks, saved_hashes = (
-                            await _saved_conversation_values(
-                                messages,
-                                response_text,
-                                model_id,
-                                prefix,
-                                blocks,
-                                prefix_hashes or [],
-                                response_reasoning,
-                                reasoning_field,
-                            )
-                        )
-                    except Exception as e:  # noqa: BLE001
-                        log.warning(
-                            "saved_conversation_values_fail key=%s: %s", key[:16], e
-                        )
-                        saved_prefix, saved_blocks, saved_hashes = (
+                    save_task = asyncio.create_task(
+                        _background_save(
+                            clients or [],
+                            sm,
+                            g,
+                            key,
                             prefix,
                             blocks,
                             prefix_hashes or [],
+                            model_id,
+                            messages or [],
+                            "".join(response_parts),
+                            "".join(reasoning_parts or []),
+                            reasoning_field,
                         )
-                    ok = await _save_and_write_meta(
-                        clients,
-                        sm,
-                        g,
-                        key,
-                        saved_prefix,
-                        saved_blocks,
-                        prefix_hashes or [],
-                        model_id,
-                        saved_hashes,
                     )
-                log.info(
-                    "stream_reader_done g=%s key=%s saved=%s completed=%s",
-                    g,
-                    key[:16],
-                    ok,
-                    completed,
-                )
+                    _BG_SAVE_TASKS.add(save_task)
+                    save_task.add_done_callback(_BG_SAVE_TASKS.discard)
+                    handed_off = True
+                    log.info(
+                        "stream_reader_save_handoff g=%s key=%s",
+                        g,
+                        key[:16],
+                    )
+                else:
+                    log.info(
+                        "stream_reader_done g=%s key=%s saved=%s completed=%s",
+                        g,
+                        key[:16],
+                        False,
+                        completed,
+                    )
             finally:
-                # Release is guaranteed: a synchronous call that cannot be
-                # interrupted; it runs even if a re-cancellation interrupts the save.
-                log.info("slot_release g=%s key=%s via=stream", g, key[:16])
-                sm.release(g)
+                if not handed_off:
+                    log.info("slot_release g=%s key=%s via=stream", g, key[:16])
+                    sm.release(g)
             # Sentinel with bounded wait: if there is no consumer, do not
             # block (the slot is already released).
             try:

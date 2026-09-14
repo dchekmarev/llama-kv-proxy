@@ -82,6 +82,7 @@ async def test_normal_stream_delivers_all_and_releases(sm, no_meta):
     )
 
     received = [c async for c in gen]
+    await _pump(0.3)
 
     assert received == chunks
     assert not any(c.startswith(b"data: ") and b'"error"' in c for c in received), (
@@ -273,6 +274,7 @@ async def test_big_stream_saves_cache(sm, monkeypatch):
         resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
     )
     _ = [c async for c in gen]
+    await _pump(0.3)
 
     assert not lock.locked()
     sm.backends[0]["client"].save_slot.assert_awaited_once()
@@ -344,6 +346,63 @@ async def test_meta_not_written_when_save_fails(sm, monkeypatch):
 
     write_meta_async.assert_not_awaited()
     assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_reader_cancel_while_save_pending_does_not_kill_save(
+    sm, monkeypatch
+):
+    """Regression (hermes SSE disconnect): the client closes the SSE connection
+    right after reading the content, while the KV-cache save is still writing.
+    The save must run in a detached task (not inline in the reader), so
+    cancelling the reader task must not abort the save."""
+    import hashing
+
+    write_meta_async = AsyncMock()
+    monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
+
+    save_started = asyncio.Event()
+    save_release = asyncio.Event()
+
+    async def slow_save(*_a, **_k):
+        save_started.set()
+        await save_release.wait()
+        return True
+
+    sm.backends[0]["client"].save_slot = AsyncMock(side_effect=slow_save)
+
+    g = (0, "model", 0)
+    lock = await _acquire(sm, g)
+    chunks = [b"c%d" % i for i in range(64)]
+    resp = FakeResp(chunks, delay=0.005)
+
+    gen = await chat_flow.start_stream_task(
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+    )
+
+    drained: list[bytes] = []
+
+    async def drain():
+        async for c in gen:
+            drained.append(c)
+
+    drain_task = asyncio.create_task(drain())
+
+    # Wait until the reader has streamed everything and the (slow) save is in
+    # flight; then cancel the reader exactly as the client disconnect would.
+    await asyncio.wait_for(save_started.wait(), timeout=2.0)
+    for t in list(chat_flow._READER_TASKS):
+        if not t.done():
+            t.cancel()
+    save_release.set()
+    await _pump(0.5)
+
+    assert not lock.locked(), "slot must be released by the background save"
+    write_meta_async.assert_awaited_once(), (
+        "a cancelled reader must not abort the already-started save"
+    )
+    await asyncio.wait_for(asyncio.shield(drain_task), timeout=2.0)
+    assert drained == chunks
 
 
 @pytest.mark.asyncio
