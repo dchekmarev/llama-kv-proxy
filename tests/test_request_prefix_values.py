@@ -123,9 +123,9 @@ def test_message_part_computed_once_per_message(monkeypatch):
     calls: list[dict] = []
     real_part = hs._message_part
 
-    def counting_part(msg: dict) -> str:
+    def counting_part(msg: dict, include_reasoning: bool = False) -> str:
         calls.append(msg)
-        return real_part(msg)
+        return real_part(msg, include_reasoning)
 
     monkeypatch.setattr(hs, "_message_part", counting_part)
     msgs: list[dict] = [

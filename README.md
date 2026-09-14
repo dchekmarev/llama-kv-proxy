@@ -167,6 +167,7 @@ All parameters are environment variables; defaults in parentheses.
 | `BIN_RECONCILE_INTERVAL_S` | `600` | Interval between meta/.bin reconciliations (both directions); `0` disables. |
 | `BIN_SAVE_GRACE_S` | `10` | Grace window: a `.bin` without a meta modified within this window is treated as an in-flight save and skipped. `0` disables the guard. |
 | `ERASE_BEFORE_SMALL` | `0` | `1` clears a slot's in-memory KV (`action=erase`) before dispatching a small request, so it does not start on top of another conversation's stale KV. Off by default until verified against the target build. |
+| `REASONING_IN_KEY` | `0` | `1` includes `reasoning_content`/`reasoning` in the per-message cache-key parts and in the saved assistant response, so distinct reasoning traces get distinct cache keys. Only matters when the backend chat template renders reasoning into the prompt. Off by default (keys byte-identical to the legacy behavior). |
 | `PORT` | `8081` | Proxy port. |
 | `LOG_LEVEL` | `INFO` | Log level. |
 
@@ -226,6 +227,7 @@ CI (`.github/workflows/ci.yml`) runs the same checks (ruff, mypy, pytest) on eve
 - **Multi-backend:** see the note in Configuration — keep all backends on the same model, or always send `model`.
 - **`.bin` cleanup requires a mount.** llama.cpp has no delete endpoint; without mounting `--slot-save-path` and setting `BIN_CACHE_DIR`, `.bin` files are only purged best-effort via the (mostly no-op) `DELETE /slots` fallback.
 - **`ERASE_BEFORE_SMALL` is off by default** until verified against the target build (some builds auto-clear on a prompt mismatch, in which case it is redundant).
+- **`REASONING_IN_KEY` is off by default.** Enabling it changes the cache key for every message carrying a reasoning field, so previously cached entries stop matching until re-cached (deliberate key churn, only when the flag is turned on).
 
 ## Acknowledgments / Inspiration
 

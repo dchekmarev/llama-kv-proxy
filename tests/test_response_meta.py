@@ -52,25 +52,25 @@ async def _pump(seconds=0.3):
 
 def test_assistant_content_normal():
     out = {"choices": [{"message": {"content": "hi"}}]}
-    assert chat_flow._assistant_content(out) == "hi"
+    assert chat_flow._assistant_content(out) == ("hi", "", "reasoning_content")
 
 
 def test_assistant_content_missing_choices():
-    assert chat_flow._assistant_content({"choices": []}) == ""
+    assert chat_flow._assistant_content({"choices": []}) == ("", "", "reasoning_content")
 
 
 def test_assistant_content_missing_message():
-    assert chat_flow._assistant_content({"choices": [{}]}) == ""
+    assert chat_flow._assistant_content({"choices": [{}]}) == ("", "", "reasoning_content")
 
 
 def test_assistant_content_none_content():
     out = {"choices": [{"message": {"content": None}}]}
-    assert chat_flow._assistant_content(out) == ""
+    assert chat_flow._assistant_content(out) == ("", "", "reasoning_content")
 
 
 def test_assistant_content_non_string():
     out = {"choices": [{"message": {"content": ["a", "b"]}}]}
-    assert chat_flow._assistant_content(out) == "['a', 'b']"
+    assert chat_flow._assistant_content(out) == ("['a', 'b']", "", "reasoning_content")
 
 
 def test_append_stream_content_delta():

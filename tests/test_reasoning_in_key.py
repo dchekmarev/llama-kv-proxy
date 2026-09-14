@@ -47,10 +47,7 @@ def sm(monkeypatch):
     client = MagicMock()
     client.save_slot = AsyncMock(return_value=True)
     client.restore_slot = AsyncMock(return_value=True)
-    client.erase_slot = AsyncMock(return_value=True)
     client.get_model_id_cached = AsyncMock(return_value="m1")
-    # No preset alias table: a client model name maps to nothing here.
-    client.resolve_model_id_cached = AsyncMock(return_value=None)
     client.get_loaded_model = AsyncMock(return_value="m1")
     client.chat_completions = AsyncMock(return_value={"choices": []})
     manager.set_clients([client])
@@ -552,8 +549,8 @@ async def _chat_keys(
     flags: list[bool] = []
     real = hs.request_prefix_values_async
 
-    async def spy(messages, model_id, wpb, include_reasoning=False, render_ctx=None):
-        result = await real(messages, model_id, wpb, include_reasoning, render_ctx)
+    async def spy(messages, model_id, wpb, include_reasoning=False):
+        result = await real(messages, model_id, wpb, include_reasoning)
         keys.append(result[1])
         flags.append(include_reasoning)
         return result

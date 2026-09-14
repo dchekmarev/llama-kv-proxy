@@ -169,6 +169,14 @@ BIN_SAVE_GRACE_S = _env_float("BIN_SAVE_GRACE_S", 10)
 # Off by default (no behavior change until verified).
 ERASE_BEFORE_SMALL = _env_bool("ERASE_BEFORE_SMALL", False)
 
+# Include the reasoning fields (reasoning_content / reasoning) in the
+# per-message cache-key parts and in the saved assistant response, so two
+# requests with identical content but different reasoning traces get distinct
+# cache keys. Only matters when the backend chat template renders reasoning
+# into the prompt (DeepSeek-R1/Qwen3-style templates). Off by default: when
+# off, keys are byte-identical to the legacy behavior (no cache churn).
+REASONING_IN_KEY = _env_bool("REASONING_IN_KEY", False)
+
 # Service port
 PORT = _env_int("PORT", 8081)
 

@@ -54,6 +54,7 @@ from config import (
     ERASE_BEFORE_SMALL,
     LCP_TH,
     MODEL_ID,
+    REASONING_IN_KEY,
     WORDS_PER_BLOCK,
 )
 from llama_client import RESTORE_MISSING, LlamaClient
@@ -96,46 +97,93 @@ def _provider_error_status(status: object) -> int:
     return 502
 
 
-def _assistant_content(out: dict) -> str:
-    """Assistant text from a non-stream chat completion body."""
+def _reasoning_of(msg: dict) -> tuple[object, str]:
+    """(reasoning value, field name) from a message/delta dict.
+
+    reasoning_content takes precedence over the reasoning field variant; the
+    field name is "reasoning_content" when neither is present. Shared by the
+    non-stream and stream extraction paths so both stay in parity.
+    """
+    value = msg.get("reasoning_content")
+    if value is not None:
+        return value, "reasoning_content"
+    value = msg.get("reasoning")
+    if value is not None:
+        return value, "reasoning"
+    return None, "reasoning_content"
+
+
+def _assistant_content(out: dict) -> tuple[str, str, str]:
+    """(Assistant text, reasoning text, reasoning field name) from a non-stream
+    chat completion body.
+
+    The reasoning text (reasoning_content, else reasoning) and the field name
+    the backend used are only used for the saved-conversation values when
+    REASONING_IN_KEY is on; they are always extracted so the caller decides.
+    The field name is "reasoning_content" when no reasoning is present.
+    """
     choices = out.get("choices") if isinstance(out, dict) else None
     if not choices or not isinstance(choices[0], dict):
-        return ""
+        return "", "", "reasoning_content"
     message = choices[0].get("message")
     if not isinstance(message, dict):
-        return ""
+        return "", "", "reasoning_content"
     content = message.get("content")
     if content is None:
-        return ""
-    return content if isinstance(content, str) else str(content)
+        content = ""
+    content = content if isinstance(content, str) else str(content)
+    reasoning, field = _reasoning_of(message)
+    if reasoning is None:
+        reasoning = ""
+    return content, (reasoning if isinstance(reasoning, str) else str(reasoning)), field
 
 
-def _append_stream_content(line: str, parts: list[str]) -> None:
-    """Append assistant text from one SSE line (delta first, message fallback)."""
+def _append_stream_content(
+    line: str, parts: list[str], reasoning_parts: list[str] | None = None
+) -> str | None:
+    """Append assistant text from one SSE line (delta first, message fallback).
+
+    When reasoning_parts is given (REASONING_IN_KEY on), the line's reasoning
+    (delta first, message fallback; reasoning_content, else reasoning — same
+    priority as the non-stream path) is appended there too, so the save site
+    has the response's reasoning trace. Returns the reasoning field name the
+    line used ("reasoning_content" or "reasoning"), or None when the line
+    carried no reasoning.
+    """
     line = line.strip()
     if not line.startswith("data:"):
-        return
+        return None
     payload = line[5:].strip()
     if not payload or payload == "[DONE]":
-        return
+        return None
     try:
         data = json.loads(payload)
     except (json.JSONDecodeError, ValueError):
-        return
+        return None
     choices = data.get("choices") if isinstance(data, dict) else None
     if not choices or not isinstance(choices[0], dict):
-        return
+        return None
     first = choices[0]
     content = None
+    reasoning = None
+    field = "reasoning_content"
     delta = first.get("delta")
     if isinstance(delta, dict):
         content = delta.get("content")
-    if content is None:
+        reasoning, field = _reasoning_of(delta)
+    if content is None or reasoning is None:
         message = first.get("message")
         if isinstance(message, dict):
-            content = message.get("content")
+            if content is None:
+                content = message.get("content")
+            if reasoning is None:
+                reasoning, field = _reasoning_of(message)
     if isinstance(content, str) and content:
         parts.append(content)
+    if reasoning_parts is not None and isinstance(reasoning, str) and reasoning:
+        reasoning_parts.append(reasoning)
+        return field
+    return None
 
 
 async def _saved_conversation_values(
@@ -145,9 +193,16 @@ async def _saved_conversation_values(
     fallback_prefix: str,
     fallback_blocks: list[str],
     fallback_hashes: list[str],
+    response_reasoning: str = "",
+    response_reasoning_field: str = "reasoning_content",
 ) -> tuple[str, list[str], list[str]]:
-    """Prefix values for the stored conversation, or prompt-only fallback."""
-    if not response_text:
+    """Prefix values for the stored conversation, or prompt-only fallback.
+
+    response_reasoning_field is the field name the backend used for the
+    reasoning trace; the saved assistant message carries it under that name
+    so an echoed continuation request matches.
+    """
+    if not response_text and not (REASONING_IN_KEY and response_reasoning):
         return fallback_prefix, fallback_blocks, fallback_hashes
     return await asyncio.to_thread(
         hs.saved_conversation_values,
@@ -155,6 +210,9 @@ async def _saved_conversation_values(
         response_text,
         model_id,
         WORDS_PER_BLOCK,
+        REASONING_IN_KEY,
+        response_reasoning or None,
+        response_reasoning_field,
     )
 
 
@@ -279,6 +337,8 @@ async def _background_save(
     model_id: str,
     messages: list[dict],
     response_text: str,
+    response_reasoning: str = "",
+    response_reasoning_field: str = "reasoning_content",
 ) -> None:
     """Non-stream big-request save+meta, run after the response is returned.
 
@@ -298,6 +358,8 @@ async def _background_save(
                     prefix,
                     blocks,
                     prefix_hashes,
+                    response_reasoning,
+                    response_reasoning_field,
                 )
             )
         except Exception as e:  # noqa: BLE001
@@ -360,6 +422,14 @@ async def start_stream_task(
         decoder = codecs.getincrementaldecoder("utf-8")() if is_big else None
         sse_buffer = ""
         response_parts: list[str] = []
+        # Response reasoning trace (REASONING_IN_KEY only): captured from the
+        # delta chunks so the save site can fold it into the saved
+        # conversation; None keeps the flag-off path byte-identical.
+        reasoning_parts: list[str] | None = [] if REASONING_IN_KEY else None
+        # The reasoning field name the backend streamed (reasoning_content or
+        # reasoning): the saved assistant message must carry the trace under
+        # the same name the client received and echoes back.
+        reasoning_field = "reasoning_content"
         try:
             async for chunk in resp.aiter_raw():
                 if not chunk:
@@ -381,11 +451,19 @@ async def start_stream_task(
                     sse_buffer += decoder.decode(chunk)
                     while "\n" in sse_buffer:
                         line, sse_buffer = sse_buffer.split("\n", 1)
-                        _append_stream_content(line, response_parts)
+                        field = _append_stream_content(
+                            line, response_parts, reasoning_parts
+                        )
+                        if field:
+                            reasoning_field = field
             if decoder is not None:
                 sse_buffer += decoder.decode(b"", True)
                 if sse_buffer:
-                    _append_stream_content(sse_buffer, response_parts)
+                    field = _append_stream_content(
+                        sse_buffer, response_parts, reasoning_parts
+                    )
+                    if field:
+                        reasoning_field = field
             completed = not push_failed
         except asyncio.CancelledError:
             # Distinguish the two cancellation sources: a client disconnect
@@ -442,6 +520,7 @@ async def start_stream_task(
                 # pollute the disk cache.
                 if completed and is_big:
                     response_text = "".join(response_parts)
+                    response_reasoning = "".join(reasoning_parts or [])
                     try:
                         saved_prefix, saved_blocks, saved_hashes = (
                             await _saved_conversation_values(
@@ -451,6 +530,8 @@ async def start_stream_task(
                                 prefix,
                                 blocks,
                                 prefix_hashes or [],
+                                response_reasoning,
+                                reasoning_field,
                             )
                         )
                     except Exception as e:  # noqa: BLE001
@@ -540,7 +621,7 @@ async def chat_flow(
     # words are tokenized once (blocks + word count share them) and the
     # per-message prefix hashes are computed incrementally (O(n), not O(n^2)).
     prefix, key, blocks, prefix_hashes, n_words = await hs.request_prefix_values_async(
-        messages, effective_model, WORDS_PER_BLOCK
+        messages, effective_model, WORDS_PER_BLOCK, REASONING_IN_KEY
     )
     is_big = n_words > BIG_THRESHOLD_WORDS
 
@@ -729,7 +810,9 @@ async def chat_flow(
                 # Save + meta + subsumed-meta cleanup (see the stream reader)
                 # runs in the background: the .bin write must not delay the
                 # JSON response. The task owns the slot and releases it.
-                response_text = _assistant_content(out)
+                response_text, response_reasoning, response_reasoning_field = (
+                    _assistant_content(out)
+                )
                 save_task = asyncio.create_task(
                     _background_save(
                         clients,
@@ -742,6 +825,8 @@ async def chat_flow(
                         effective_model,
                         messages,
                         response_text,
+                        response_reasoning,
+                        response_reasoning_field,
                     )
                 )
                 _BG_SAVE_TASKS.add(save_task)

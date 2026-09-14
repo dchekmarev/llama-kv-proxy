@@ -34,12 +34,14 @@ async def test_chat_flow_computes_prefix_values_off_loop(sm, monkeypatch):
     stays responsive and the values are produced by request_prefix_values."""
     info = {}
 
-    def blocking_values(messages, model_id, wpb):
+    def blocking_values(messages, model_id, wpb, include_reasoning=False):
         info["thread"] = threading.current_thread().ident
         time.sleep(0.3)
         return (
-            hs.raw_prefix(messages),
-            hs.prefix_key_sha256(model_id + "\n" + hs.raw_prefix(messages)),
+            hs.raw_prefix(messages, include_reasoning),
+            hs.prefix_key_sha256(
+                model_id + "\n" + hs.raw_prefix(messages, include_reasoning)
+            ),
             [],
             [],
             10_000,
@@ -89,9 +91,9 @@ async def test_chat_flow_does_not_retokenize_for_word_count(sm, monkeypatch):
     calls = []
     real_values = hs.request_prefix_values
 
-    def counting_values(messages, model_id, wpb):
+    def counting_values(messages, model_id, wpb, include_reasoning=False):
         calls.append((messages, model_id, wpb))
-        return real_values(messages, model_id, wpb)
+        return real_values(messages, model_id, wpb, include_reasoning)
 
     monkeypatch.setattr(hs, "request_prefix_values", counting_values)
     client = sm.backends[0]["client"]
