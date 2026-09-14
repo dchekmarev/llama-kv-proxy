@@ -84,7 +84,8 @@ async def test_stream_provider_error_releases_slot(sm, meta_dir):
 
     sm.backends[0]["client"].chat_completions = AsyncMock(return_value=ErrResp())
     resp = await _chat(sm, "small", stream=True)
-    assert resp.status_code == 500
+    # M-8: a backend 5xx is a genuine upstream failure: 502 on both paths.
+    assert resp.status_code == 502
     _assert_all_free(sm)
 
 

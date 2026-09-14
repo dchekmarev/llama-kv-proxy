@@ -82,6 +82,20 @@ _lru_check_in_flight = False
 _BG_SAVE_TASKS: "set[asyncio.Task]" = set()
 
 
+def _provider_error_status(status: object) -> int:
+    """Map a provider failure to the HTTP status for the client.
+
+    A backend 4xx is a client fault and passes through unchanged (so client
+    5xx retry/alerting logic does not fire); everything else (backend 5xx,
+    connect errors, non-JSON bodies, missing/malformed status) is a genuine
+    upstream failure and maps to 502. Shared by the stream and non-stream
+    dispatch paths so both stay consistent (M-8).
+    """
+    if isinstance(status, int) and 400 <= status < 500:
+        return status
+    return 502
+
+
 def _assistant_content(out: dict) -> str:
     """Assistant text from a non-stream chat completion body."""
     choices = out.get("choices") if isinstance(out, dict) else None
@@ -654,7 +668,7 @@ async def chat_flow(
                 await resp.aclose()
                 return JSONResponse(
                     {"error": err_txt.decode("utf-8", "ignore")},
-                    status_code=resp.status_code,
+                    status_code=_provider_error_status(resp.status_code),
                 )
 
             gen = await start_stream_task(
@@ -698,13 +712,17 @@ async def chat_flow(
             # such a body must not be returned to the caller as HTTP 200.
             if out.get("object") == "error":
                 log.error(
-                    "provider_error key=%s message=%s",
+                    "provider_error key=%s status=%s message=%s",
                     key[:16],
+                    out.get("status"),
                     out.get("message"),
                 )
+                body = {"error": out.get("message") or "provider error"}
+                if out.get("raw"):
+                    body["raw"] = out["raw"]
                 return JSONResponse(
-                    {"error": out.get("message") or "provider error"},
-                    status_code=502,
+                    body,
+                    status_code=_provider_error_status(out.get("status")),
                 )
 
             if is_big:
@@ -739,6 +757,11 @@ async def chat_flow(
             )
             return JSONResponse(content=out, status_code=200)
 
+    except httpx.HTTPError as e:
+        # A connect/timeout failure: no backend response at all, so this is a
+        # genuine upstream failure (502), not a proxy bug (500).
+        log.exception("chat_upstream_error g=%s key=%s", g, key[:16])
+        return JSONResponse({"error": str(e)}, status_code=502)
     except Exception as e:
         log.exception("chat_error g=%s key=%s", g, key[:16])
         return JSONResponse({"error": str(e)}, status_code=500)
