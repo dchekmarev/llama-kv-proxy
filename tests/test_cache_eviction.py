@@ -50,6 +50,11 @@ def _write_meta(dirpath, key: str, mtime: float | None = None) -> str:
     return path
 
 
+def _pad(path: str, n: int) -> None:
+    with open(path, "ab") as f:
+        f.write(b"x" * n)
+
+
 async def test_ttl_eviction_deletes_old_meta(meta_dir, counters):
     """Meta files older than the TTL are deleted, fresh ones are kept."""
     now = time.time()
@@ -81,15 +86,82 @@ async def test_max_files_cap_keeps_newest(meta_dir, counters):
     assert not os.path.exists(paths[0])
 
 
-async def test_max_mb_cap_deletes_all_when_zero(meta_dir, counters):
-    """A zero size cap deletes everything."""
+async def test_max_mb_zero_disables_bytes_cap(meta_dir, counters):
+    """A zero size cap disables the bytes limit; nothing is deleted by it."""
     _write_meta(meta_dir, "a")
     _write_meta(meta_dir, "b")
 
     res = hs.evict_meta(ttl_hours=0, max_files=100, max_mb=0)
 
-    assert res["remaining"] == 0
-    assert sorted(res["deleted"]) == ["a", "b"]
+    assert res["deleted"] == []
+    assert res["remaining"] == 2
+    assert len(hs._meta_files()) == 2
+
+
+async def test_max_files_zero_disables_files_cap(meta_dir, counters):
+    """A zero file count cap disables the files limit; nothing is deleted."""
+    now = time.time()
+    paths = [_write_meta(meta_dir, f"k{i}", mtime=now - i * 100) for i in range(5)]
+
+    res = hs.evict_meta(ttl_hours=0, max_files=0, max_mb=100)
+
+    assert res["deleted"] == []
+    assert res["remaining"] == 5
+    assert all(os.path.exists(p) for p in paths)
+
+
+async def test_both_caps_zero_disables_all_caps(meta_dir, counters):
+    """Zero file count AND zero size cap disable both limits; nothing is
+    deleted and every file is reported as remaining."""
+    now = time.time()
+    paths = []
+    for i in range(5):
+        p = _write_meta(meta_dir, f"k{i}", mtime=now - i * 100)
+        _pad(p, 600 * 1024)
+        paths.append(p)
+
+    res = hs.evict_meta(ttl_hours=0, max_files=0, max_mb=0)
+
+    assert res["deleted"] == []
+    assert res["remaining"] == 5
+    assert all(os.path.exists(p) for p in paths)
+
+
+async def test_max_mb_cap_keeps_newest(meta_dir, counters):
+    """When the total size cap is exceeded the oldest files go first."""
+    now = time.time()
+    paths = []
+    for i in range(3):
+        p = _write_meta(meta_dir, f"k{i}", mtime=now - (3 - i) * 100)
+        _pad(p, 600 * 1024)
+        paths.append(p)
+
+    res = hs.evict_meta(ttl_hours=0, max_files=100, max_mb=1)
+
+    assert sorted(res["deleted"]) == ["k0", "k1"]
+    assert res["remaining"] == 1
+    assert os.path.exists(paths[2])
+
+
+async def test_caps_disabled_independently(meta_dir, counters):
+    """Each cap can be disabled with 0 while the other still applies."""
+    now = time.time()
+    for i in range(3):
+        p = _write_meta(meta_dir, f"k{i}", mtime=now - (3 - i) * 100)
+        _pad(p, 600 * 1024)
+
+    # Files cap off, bytes cap on: oldest evicted by size.
+    res = hs.evict_meta(ttl_hours=0, max_files=0, max_mb=1)
+    assert sorted(res["deleted"]) == ["k0", "k1"]
+    assert res["remaining"] == 1
+
+    # Rebuild the cache, then flip: bytes cap off, files cap on.
+    for i in range(3):
+        _write_meta(meta_dir, f"k{i}", mtime=now - (3 - i) * 100)
+
+    res = hs.evict_meta(ttl_hours=0, max_files=1, max_mb=0)
+    assert sorted(res["deleted"]) == ["k0", "k1"]
+    assert res["remaining"] == 1
 
 
 async def test_clear_all_meta(meta_dir, counters):

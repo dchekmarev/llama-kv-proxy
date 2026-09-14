@@ -139,6 +139,7 @@ SLOT_POLL_INTERVAL_S = _env_float("SLOT_POLL_INTERVAL_S", 30)
 
 # Cache eviction: TTL (hours), file count cap, total size cap (MB),
 # and the interval (seconds) between periodic eviction runs.
+# A cap of 0 disables that limit (same convention as BIN_CACHE_MAX_MB).
 META_TTL_H = _env_float("META_TTL_H", 24)
 META_MAX_FILES = _env_int("META_MAX_FILES", 1000)
 META_MAX_MB = _env_int("META_MAX_MB", 512)
