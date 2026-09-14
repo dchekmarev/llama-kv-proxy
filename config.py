@@ -121,6 +121,14 @@ REQUEST_TIMEOUT = _env_float("REQUEST_TIMEOUT", 600)
 # Timeout for waiting on a free slot when all slots are busy.
 ACQUIRE_TIMEOUT = _env_float("ACQUIRE_TIMEOUT", 300)
 
+# Max seconds a big request waits for an in-flight save of a prefix of its own
+# conversation before giving up on the restore. The client treats [DONE] as the
+# end of the response and sends the continuation immediately, but the previous
+# message's meta only lands after its .bin write finishes; without this wait
+# the continuation misses the restore and reprocesses the whole prompt.
+# 0 disables the wait.
+SAVE_WAIT_TIMEOUT = _env_float("SAVE_WAIT_TIMEOUT", 30)
+
 # Model id
 MODEL_ID = os.getenv("MODEL_ID", "llama.cpp")
 

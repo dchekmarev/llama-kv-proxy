@@ -55,6 +55,7 @@ from config import (
     LCP_TH,
     MODEL_ID,
     REASONING_IN_KEY,
+    SAVE_WAIT_TIMEOUT,
     WORDS_PER_BLOCK,
 )
 from llama_client import RESTORE_MISSING, LlamaClient
@@ -81,6 +82,55 @@ _lru_check_in_flight = False
 # Strong references to in-flight non-stream background save tasks (same GC
 # reason as _READER_TASKS): the .bin write must not delay the JSON response.
 _BG_SAVE_TASKS: "set[asyncio.Task]" = set()
+
+# In-flight saves: request key -> completion event. The client treats [DONE]
+# as the end of the response and sends the continuation immediately, but the
+# previous message's meta only lands after its .bin write finishes. The
+# previous request is a strict prefix of the continuation's request, so its
+# key is among the continuation's prefix hashes: a continuation that misses
+# the restore search can detect the relevant in-flight save and wait for it
+# instead of reprocessing the whole prompt.
+_INFLIGHT_SAVES: dict[str, asyncio.Event] = {}
+
+
+def _register_inflight_save(key: str) -> None:
+    _INFLIGHT_SAVES[key] = asyncio.Event()
+
+
+def _finish_inflight_save(key: str) -> None:
+    ev = _INFLIGHT_SAVES.pop(key, None)
+    if ev is not None:
+        ev.set()
+
+
+async def _wait_for_inflight_save(prefix_hashes: list[str]) -> bool:
+    """Wait for an in-flight save of a prefix of this conversation.
+
+    Returns True when a matching save was found and completed (the caller
+    must re-run the restore search), False when there is nothing to wait for
+    or the wait timed out (proceed without a restore).
+    """
+    if SAVE_WAIT_TIMEOUT <= 0:
+        return False
+    req_hashes = set(prefix_hashes)
+    ev = next((e for k, e in _INFLIGHT_SAVES.items() if k in req_hashes), None)
+    if ev is None:
+        return False
+    try:
+        await asyncio.wait_for(ev.wait(), timeout=SAVE_WAIT_TIMEOUT)
+    except asyncio.TimeoutError:
+        log.warning("inflight_save_wait_timeout timeout_s=%.1f", SAVE_WAIT_TIMEOUT)
+        return False
+    log.info("inflight_save_waited")
+    return True
+
+
+async def _find_restore_candidate(
+    prefix_hashes: list[str], blocks: list[str], model_id: str
+) -> tuple[str, float] | None:
+    return await hs.find_best_restore_candidate_async(
+        prefix_hashes, blocks, WORDS_PER_BLOCK, LCP_TH, model_id
+    )
 
 
 def _provider_error_status(status: object) -> int:
@@ -284,46 +334,59 @@ async def _save_and_write_meta(
     hashes. The new conversation supersedes every strict prefix of itself:
     those metas and their backend .bin files are removed so a continuation
     does not leave stale, shorter caches behind.
+
+    The save is registered in _INFLIGHT_SAVES for its whole duration so a
+    continuation request can wait for the meta instead of missing the restore
+    (see _wait_for_inflight_save); the entry is cleared on every exit path.
     """
+    _register_inflight_save(key)
     try:
-        ok = await sm.save_after(g, key)
-    except Exception as e:  # noqa: BLE001
-        log.warning("save_after_exception g=%s key=%s: %s", g, key[:16], e)
-        return False
-    if not ok:
-        return False
-    bin_size = bin_cache.get_bin_size(BIN_CACHE_DIR, key) if BIN_CACHE_DIR else None
-    meta_written = False
-    try:
-        await hs.write_meta_async(
-            key,
-            prefix,
-            blocks,
-            WORDS_PER_BLOCK,
-            model_id,
-            prefix_hashes,
-            bin_size,
-            saved_prefix_hashes or prefix_hashes,
-        )
-        meta_written = True
-    except Exception as e:  # noqa: BLE001
-        log.warning("write_meta_exception key=%s: %s", key[:16], e)
-    # Only drop the superseded metas once the new meta is on disk: otherwise a
-    # failed meta write would delete the still-valid shorter caches.
-    if meta_written:
         try:
-            deleted = await hs.delete_subsumed_metas_async(key, prefix_hashes, model_id)
-            if deleted:
-                await _purge_backend_files(
-                    clients or [], [(k, model_id) for k in deleted]
-                )
-                log.info(
-                    "subsumed_metas_deleted key=%s count=%d", key[:16], len(deleted)
-                )
+            ok = await sm.save_after(g, key)
         except Exception as e:  # noqa: BLE001
-            log.warning("delete_subsumed_exception key=%s: %s", key[:16], e)
-    _schedule_lru_check()
-    return True
+            log.warning("save_after_exception g=%s key=%s: %s", g, key[:16], e)
+            return False
+        if not ok:
+            return False
+        bin_size = bin_cache.get_bin_size(BIN_CACHE_DIR, key) if BIN_CACHE_DIR else None
+        meta_written = False
+        try:
+            await hs.write_meta_async(
+                key,
+                prefix,
+                blocks,
+                WORDS_PER_BLOCK,
+                model_id,
+                prefix_hashes,
+                bin_size,
+                saved_prefix_hashes or prefix_hashes,
+            )
+            meta_written = True
+        except Exception as e:  # noqa: BLE001
+            log.warning("write_meta_exception key=%s: %s", key[:16], e)
+        # Only drop the superseded metas once the new meta is on disk:
+        # otherwise a failed meta write would delete the still-valid shorter
+        # caches.
+        if meta_written:
+            try:
+                deleted = await hs.delete_subsumed_metas_async(
+                    key, prefix_hashes, model_id
+                )
+                if deleted:
+                    await _purge_backend_files(
+                        clients or [], [(k, model_id) for k in deleted]
+                    )
+                    log.info(
+                        "subsumed_metas_deleted key=%s count=%d",
+                        key[:16],
+                        len(deleted),
+                    )
+            except Exception as e:  # noqa: BLE001
+                log.warning("delete_subsumed_exception key=%s: %s", key[:16], e)
+        _schedule_lru_check()
+        return True
+    finally:
+        _finish_inflight_save(key)
 
 
 async def _background_save(
@@ -630,13 +693,11 @@ async def chat_flow(
     # big requests restore or save, so the candidate search is lazy.
     restore_key: str | None = None
     if is_big:
-        cand = await hs.find_best_restore_candidate_async(
-            prefix_hashes,
-            blocks,
-            WORDS_PER_BLOCK,
-            LCP_TH,
-            effective_model,
-        )
+        cand = await _find_restore_candidate(prefix_hashes, blocks, effective_model)
+        if cand is None and await _wait_for_inflight_save(prefix_hashes):
+            # The previous message's save finished while we waited: its meta
+            # is on disk now, search again before declaring a miss.
+            cand = await _find_restore_candidate(prefix_hashes, blocks, effective_model)
         if cand:
             restore_key, ratio = cand
             hs.record_hit()

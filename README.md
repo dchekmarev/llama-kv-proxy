@@ -151,6 +151,7 @@ All parameters are environment variables; defaults in parentheses.
 | `META_DIR` | `kv_meta` | Directory for local `.meta` descriptors, relative to the app directory. |
 | `REQUEST_TIMEOUT` | `600` | HTTP timeout to the backends, seconds. |
 | `ACQUIRE_TIMEOUT` | `300` | Maximum wait for a free slot, seconds. |
+| `SAVE_WAIT_TIMEOUT` | `30` | Max seconds a big request waits for an in-flight save of a prefix of its own conversation before giving up on the restore (the previous message's meta lands only after its `.bin` write). `0` disables the wait. |
 | `MODEL_ID` | `llama.cpp` | Fallback model id returned by `/v1/models` when the backend is unavailable. |
 | `MODEL_ID_TTL` | `60` | Backend model-id cache TTL, seconds. |
 | `MODEL_ID_TIMEOUT` | `5` | Model-id fetch timeout, seconds. |
