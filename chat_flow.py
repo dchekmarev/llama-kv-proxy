@@ -51,7 +51,7 @@ from config import (
     BIG_THRESHOLD_WORDS,
     BIN_CACHE_DIR,
     BIN_CACHE_MAX_MB,
-    ERASE_BEFORE_SMALL,
+    ERASE_BEFORE_CHAT,
     LCP_TH,
     MODEL_ID,
     REASONING_IN_KEY,
@@ -701,12 +701,13 @@ async def chat_flow(
     be_id, _mid, slot_id = g
     client = clients[be_id]
 
-    # A small request is not cached, so the slot may still hold another
-    # conversation's KV. When ERASE_BEFORE_SMALL is set, clear the slot first
-    # to avoid cross-conversation contamination. Some builds auto-clear on a
-    # prompt mismatch (in which case this is redundant); it is off by default
-    # until verified against the target build.
-    if not is_big and ERASE_BEFORE_SMALL:
+    # A successful restore already set the slot's prompt to the correct prefix,
+    # so it is left untouched. In every other case (small request, big request
+    # with no restore hit, or a failed/missing restore) the slot may still hold
+    # a stale or oversized prompt from a previous conversation; starting a chat
+    # on top of it can wedge llama.cpp in PROCESSING_PROMPT (the slot never
+    # finishes and the server busy-loops). Clear the slot first.
+    if restored is not True and ERASE_BEFORE_CHAT:
         await client.erase_slot(slot_id, model=effective_model)
 
     body = dict(data)

@@ -34,23 +34,20 @@ def sm(monkeypatch):
     client.save_slot = AsyncMock(return_value=True)
     client.restore_slot = AsyncMock(return_value=True)
     client.get_model_id_cached = AsyncMock(return_value="m1")
-    # No preset alias table: a client model name maps to nothing here.
-    client.resolve_model_id_cached = AsyncMock(return_value=None)
     client.get_loaded_model = AsyncMock(return_value="m1")
     client.chat_completions = AsyncMock(return_value={"choices": []})
     manager.set_clients([client])
     # Control the restore outcome directly instead of driving the hashing /
-    # restore-candidate machinery: acquire returns a fixed
-    # (g, lock, restored, used_key).
+    # restore-candidate machinery: acquire returns a fixed (g, lock, restored).
     manager.acquire_for_request = AsyncMock(
-        return_value=(G, asyncio.Lock(), None, None)
+        return_value=(G, asyncio.Lock(), None)
     )
     return manager
 
 
 async def _run(sm, monkeypatch, restored, flag: bool):
     client = sm.backends[0]["client"]
-    sm.acquire_for_request.return_value = (G, asyncio.Lock(), restored, None)
+    sm.acquire_for_request.return_value = (G, asyncio.Lock(), restored)
     monkeypatch.setattr(chat_flow, "ERASE_BEFORE_CHAT", flag)
     data = {"messages": [{"role": "user", "content": "hi"}], "stream": False}
     await chat_flow.chat_flow(sm, [client], data)

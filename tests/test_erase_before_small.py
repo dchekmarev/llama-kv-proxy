@@ -1,8 +1,10 @@
 # tests/test_erase_before_small.py
 
-"""M5: when ERASE_BEFORE_SMALL is set, a small (non-cached) request clears the
-slot's KV cache before dispatching, so it does not start on top of another
-conversation's stale KV. With the flag off, the slot is left untouched."""
+"""A small (non-cached) request is never preceded by a restore, so with
+ERASE_BEFORE_CHAT on it clears the slot's KV cache before dispatching (it must
+not start on top of another conversation's stale/oversized prompt). With the
+flag off, the slot is left untouched. The big-request / restore-outcome matrix
+lives in test_erase_before_chat.py."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -41,7 +43,7 @@ async def _small_chat(sm, monkeypatch, flag: bool):
     client = sm.backends[0]["client"]
     app_module.app.state.sm = sm
     app_module.app.state.clients = [client]
-    monkeypatch.setattr(chat_flow, "ERASE_BEFORE_SMALL", flag)
+    monkeypatch.setattr(chat_flow, "ERASE_BEFORE_CHAT", flag)
     data = {"messages": [{"role": "user", "content": "hi"}], "stream": False}
     await app_module.chat(FakeRequest(data))
     return client

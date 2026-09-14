@@ -169,6 +169,20 @@ BIN_SAVE_GRACE_S = _env_float("BIN_SAVE_GRACE_S", 10)
 # Off by default (no behavior change until verified).
 ERASE_BEFORE_SMALL = _env_bool("ERASE_BEFORE_SMALL", False)
 
+# Erase a slot's in-memory KV cache (action=erase) before dispatching any chat
+# that was NOT preceded by a successful restore. A successful restore already
+# sets the slot's prompt to the correct prefix, so it is skipped. Otherwise the
+# slot may still hold a stale or oversized prompt from a previous conversation;
+# starting a chat on top of it can wedge llama.cpp in PROCESSING_PROMPT (the
+# slot never finishes and the server busy-loops). On by default (correctness
+# over latency): a big request with no restore hit reprocesses its prompt.
+ERASE_BEFORE_CHAT = _env_bool("ERASE_BEFORE_CHAT", True)
+
+# Watchdog: if a backend slot reports is_processing for longer than this many
+# seconds, it is presumed wedged (stuck in prompt processing) and is erased to
+# recover the backend without a restart. 0 disables the watchdog.
+STUCK_SLOT_THRESHOLD_S = _env_float("STUCK_SLOT_THRESHOLD_S", 300)
+
 # Include the reasoning fields (reasoning_content / reasoning) in the
 # per-message cache-key parts and in the saved assistant response, so two
 # requests with identical content but different reasoning traces get distinct
