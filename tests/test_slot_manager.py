@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import slot_manager as sm_module
+from llama_client import RESTORE_ERROR
 from slot_manager import SlotManager
 
 
@@ -61,12 +62,13 @@ async def test_acquire_with_restore(sm):
 @pytest.mark.asyncio
 async def test_restore_exception_does_not_leak_lock(sm):
     """restore_slot raising (backend down) must not leak the lock; the request
-    proceeds without cache (restored=False)."""
+    proceeds without cache. The restored sentinel is RESTORE_ERROR (not a
+    plain False) so the caller keeps the meta for a future retry."""
     sm.backends[0]["client"].restore_slot = AsyncMock(
         side_effect=RuntimeError("backend down")
     )
     g, lock, restored, used_key = await sm.acquire_for_request("model1", "key123")
-    assert restored is False
+    assert restored is RESTORE_ERROR
     assert used_key == "key123", "the key was attempted even though restore failed"
     assert lock.locked(), "slot stays with the request"
     sm.release(g)

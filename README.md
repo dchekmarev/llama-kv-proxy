@@ -149,7 +149,7 @@ All parameters are environment variables; defaults in parentheses.
 | `BIG_THRESHOLD_WORDS` | `500` | Prompts longer than this are "big". |
 | `LCP_TH` | `0.6` | Minimum share of the request that a cached prefix must cover to be restored. |
 | `META_DIR` | `kv_meta` | Directory for local `.meta` descriptors, relative to the app directory. |
-| `REQUEST_LOG_DIR` | `kv_reqlog` | Directory for per-request JSON groups (`{timestamp_ms}.{request_id}.{type}.json`: `request`, `response`, `prefix`, plus `raw` with the raw SSE for streams), relative to the app directory. Empty disables logging. |
+| `REQUEST_LOG_DIR` | `kv_reqlog` | Directory for per-request JSON groups (`{timestamp_ms}.{request_id}.{type}.json`: `request`, `response`, `prefix`, `decision`, plus `raw` with the raw SSE for streams), relative to the app directory. Empty disables logging. |
 | `REQUEST_LOG_MAX_GROUPS` | `100` | Max number of request groups kept; oldest groups (all their files) are deleted first. `0` disables rotation. |
 | `REQUEST_TIMEOUT` | `600` | HTTP timeout to the backends, seconds. |
 | `ACQUIRE_TIMEOUT` | `300` | Maximum wait for a free slot, seconds. |

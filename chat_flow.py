@@ -53,9 +53,9 @@ from config import (
     BIG_THRESHOLD_WORDS,
     BIN_CACHE_DIR,
     BIN_CACHE_MAX_MB,
-    MIN_BIN_SIZE_VALID,
     ERASE_BEFORE_CHAT,
     LCP_TH,
+    MIN_BIN_SIZE_VALID,
     MODEL_ID,
     REASONING_IN_KEY,
     SAVE_WAIT_TIMEOUT,
@@ -176,6 +176,58 @@ async def _find_restore_candidate(
     )
 
 
+def _emit_decision(decision: dict, rid: str, ts: str) -> None:
+    """Persist the per-request cache decision (fire-and-forget, idempotent).
+
+    The same decision dict is threaded through the request pipeline (restore
+    phase in chat_flow, save outcome in the background save), so exactly one
+    writer emits it — the task that finishes last, or the small non-stream
+    path in chat_flow. The "_emitted" marker is never serialized.
+    """
+    if not rid or not ts or decision.pop("_emitted", False):
+        return
+    decision["_emitted"] = True
+    reqlog.log_file(
+        "decision",
+        rid,
+        ts,
+        {k: v for k, v in decision.items() if k != "_emitted"},
+    )
+
+
+def _set_save_outcome(decision: dict | None, **kw: object) -> None:
+    """Record the save result in the decision dict (no-op without one)."""
+    if decision is not None:
+        decision["save"] = {"attempted": True, **kw}
+
+
+async def _snapshot_slot(
+    client: LlamaClient, slot_id: int, model_id: str
+) -> dict | None:
+    """KV state of the just-restored slot (GET /slots), or None if unavailable.
+
+    The recorded fields are the llama.cpp /slots subset that distinguishes a
+    restore that populated the KV cache (n_past == restored prefix tokens)
+    from one the backend reset (n_past == 0): the key datapoint for "restore
+    reported ok but the whole prompt is reprocessed" investigations. Best
+    effort — a missing /slots endpoint just yields None.
+    """
+    try:
+        slots = await client.get_slots(model=model_id)
+    except Exception:  # noqa: BLE001
+        log.debug("slot_snapshot_fail slot=%d model=%s", slot_id, model_id)
+        return None
+    if isinstance(slots, list):
+        for s in slots:
+            if isinstance(s, dict) and s.get("id") == slot_id:
+                return {
+                    k: s.get(k)
+                    for k in ("state", "n_ctx", "n_past", "n_tokens", "total_tokens")
+                    if k in s
+                }
+    return None
+
+
 def _provider_error_status(status: object) -> int:
     """Map a provider failure to the HTTP status for the client.
 
@@ -277,6 +329,34 @@ def _append_stream_content(
         reasoning_parts.append(reasoning)
         return field
     return None
+
+
+def _stream_usage_of(line: str) -> tuple[dict, dict] | None:
+    """(usage, timings) from an SSE line that carries the final usage chunk.
+
+    llama.cpp emits one final SSE chunk with usage/timings (no choices) when
+    prompt caching is on. Returns None for content chunks, [DONE] and
+    malformed lines. The chunk's timings are kept when present; comma-joined
+    keys are not polluted into the assembled content because the usage chunk
+    has no delta.
+    """
+    line = line.strip()
+    if not line.startswith("data:"):
+        return None
+    payload = line[5:].strip()
+    if not payload or payload == "[DONE]":
+        return None
+    try:
+        data = json.loads(payload)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    usage = data.get("usage")
+    if not isinstance(usage, dict) or not usage:
+        return None
+    timings = data.get("timings")
+    return usage, timings if isinstance(timings, dict) else {}
 
 
 async def _saved_conversation_values(
@@ -409,6 +489,7 @@ async def _save_and_write_meta(
     prefix_hashes: list[str],
     model_id: str,
     saved_prefix_hashes: list[str] | None = None,
+    decision: dict | None = None,
 ) -> bool:
     """Save the slot, write its meta, then drop the metas it supersedes.
 
@@ -430,8 +511,10 @@ async def _save_and_write_meta(
             ok = await sm.save_after(g, key)
         except Exception as e:  # noqa: BLE001
             log.warning("save_after_exception g=%s key=%s: %s", g, key[:16], e)
+            _set_save_outcome(decision, success=False, phase="save_error")
             return False
         if not ok:
+            _set_save_outcome(decision, success=False, phase="save_failed")
             return False
         bin_size = bin_cache.get_bin_size(BIN_CACHE_DIR, key) if BIN_CACHE_DIR else None
         if (
@@ -449,6 +532,7 @@ async def _save_and_write_meta(
                 bin_cache.delete_bin_file(BIN_CACHE_DIR, key)
             except Exception:  # noqa: BLE001
                 pass
+            _set_save_outcome(decision, success=False, phase="empty_capture", bin_size_bytes=bin_size)
             return False
         meta_written = False
         try:
@@ -509,6 +593,7 @@ async def _save_and_write_meta(
                     )
             except Exception as e:  # noqa: BLE001
                 log.warning("delete_subsumed_exception key=%s: %s", key[:16], e)
+        _set_save_outcome(decision, success=True, meta_written=meta_written, bin_size_bytes=bin_size)
         _schedule_lru_check()
         return True
     finally:
@@ -530,6 +615,7 @@ async def _background_save(
     response_reasoning_field: str = "reasoning_content",
     rid: str = "",
     ts: str = "",
+    decision: dict | None = None,
 ) -> None:
     """Non-stream big-request save+meta, run after the response is returned.
 
@@ -589,6 +675,7 @@ async def _background_save(
             prefix_hashes,
             model_id,
             saved_hashes,
+            decision=decision,
         )
         log.info("bg_save_done g=%s key=%s saved=%s", g, key[:16], ok)
     except Exception as e:  # noqa: BLE001
@@ -597,6 +684,9 @@ async def _background_save(
         # Clear the in-flight entry on every exit path (a no-op when
         # _save_and_write_meta already finished it).
         _finish_inflight_save(key)
+        if decision is not None:
+            decision.setdefault("save", {"attempted": True, "success": False, "phase": "save_error"})
+            _emit_decision(decision, rid, ts)
         # Release is guaranteed: a synchronous call that cannot be
         # interrupted; it runs even if a re-cancellation interrupts the save.
         log.info("slot_release g=%s key=%s via=bg_save", g, key[:16])
@@ -617,6 +707,7 @@ async def start_stream_task(
     messages: list[dict] | None = None,
     rid: str = "",
     ts: str = "",
+    decision: dict | None = None,
 ) -> AsyncGenerator[bytes, None]:
     queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=STREAM_QUEUE_SIZE)
 
@@ -648,6 +739,11 @@ async def start_stream_task(
         # reasoning): the saved assistant message must carry the trace under
         # the same name the client received and echoes back.
         reasoning_field = "reasoning_content"
+        # usage/timings from the final SSE chunk (llama.cpp, prompt caching on):
+        # the ground-truth for "was the whole prompt reprocessed" — cached_tokens
+        # must match the restored prefix. None until/unless the backend sent it.
+        stream_usage: dict | None = None
+        stream_timings: dict | None = None
         try:
             async for chunk in resp.aiter_raw():
                 if not chunk:
@@ -674,6 +770,9 @@ async def start_stream_task(
                     )
                     if field:
                         reasoning_field = field
+                    u = _stream_usage_of(line)
+                    if u is not None:
+                        stream_usage, stream_timings = u
             sse_buffer += decoder.decode(b"", True)
             if sse_buffer:
                 raw_parts.append(sse_buffer)
@@ -682,6 +781,9 @@ async def start_stream_task(
                 )
                 if field:
                     reasoning_field = field
+                u = _stream_usage_of(sse_buffer)
+                if u is not None:
+                    stream_usage, stream_timings = u
             completed = not push_failed
         except asyncio.CancelledError:
             # Distinguish the two cancellation sources: a client disconnect
@@ -734,17 +836,17 @@ async def start_stream_task(
             # background save below (it reuses the values it computes); every
             # other path (small, interrupted) computes them in its own task.
             if rid and ts:
-                reqlog.log_file(
-                    "response",
-                    rid,
-                    ts,
-                    {
-                        "content": "".join(response_parts),
-                        "reasoning": "".join(reasoning_parts or []),
-                        "completed": completed,
-                        "error": error_reason,
-                    },
-                )
+                resp_payload: dict = {
+                    "content": "".join(response_parts),
+                    "reasoning": "".join(reasoning_parts or []),
+                    "completed": completed,
+                    "error": error_reason,
+                }
+                if stream_usage is not None:
+                    resp_payload["usage"] = stream_usage
+                    if stream_timings:
+                        resp_payload["timings"] = stream_timings
+                reqlog.log_file("response", rid, ts, resp_payload)
                 reqlog.log_file("raw", rid, ts, {"sse": "".join(raw_parts)})
                 if not (completed and is_big):
                     ptask = asyncio.create_task(
@@ -799,6 +901,7 @@ async def start_stream_task(
                         reasoning_field,
                         rid,
                         ts,
+                        decision=decision,
                     )
                 )
                 _BG_SAVE_TASKS.add(save_task)
@@ -817,6 +920,9 @@ async def start_stream_task(
                     False,
                     completed,
                 )
+                if decision is not None:
+                    decision["save"] = {"attempted": False}
+                    _emit_decision(decision, rid, ts)
             try:
                 try:
                     await resp.aclose()
@@ -908,18 +1014,44 @@ async def chat_flow(
     )
     is_big = n_words > BIG_THRESHOLD_WORDS
 
+    # Per-request cache decision, threaded through the request pipeline and
+    # finally persisted as decision.json by whichever task finishes last
+    # (restore phase here, save outcome in the background save or the stream
+    # reader). Skipped (no emit) when neither a handler path completes.
+    decision: dict = {
+        "is_big": is_big,
+        "n_words": n_words,
+        "words_threshold": BIG_THRESHOLD_WORDS,
+        "model": effective_model,
+        "restore": {
+            "candidate_key": None,
+            "candidate_ratio": None,
+            "used_key": None,
+            "outcome": None,
+            "stale_meta_dropped": False,
+        },
+        "wait_inflight_save": False,
+        "erase_done": False,
+        "slot": None,
+        "slot_before_chat": None,
+    }
+
     # Per-message prefix hashes (last == key): the meta is findable by any of
     # its prefixes, and a continuation supersedes its strict prefixes. Only
     # big requests restore or save, so the candidate search is lazy.
     restore_key: str | None = None
+    restore_ratio: float | None = None
     if is_big:
         cand = await _find_restore_candidate(prefix_hashes, blocks, effective_model)
         if cand is None and await _wait_for_inflight_save(prefix_hashes):
+            decision["wait_inflight_save"] = True
             # The previous message's save finished while we waited: its meta
             # is on disk now, search again before declaring a miss.
             cand = await _find_restore_candidate(prefix_hashes, blocks, effective_model)
         if cand:
-            restore_key, ratio = cand
+            restore_key, restore_ratio = cand
+            decision["restore"]["candidate_key"] = restore_key
+            decision["restore"]["candidate_ratio"] = restore_ratio
             hs.record_hit()
             # Refresh the meta timestamp so an actively used entry survives
             # TTL eviction.
@@ -927,7 +1059,7 @@ async def chat_flow(
             log.info(
                 "restore_candidate basename=%s ratio=%.3f",
                 restore_key[:16],
-                ratio,
+                restore_ratio,
             )
         else:
             hs.record_miss()
@@ -976,6 +1108,13 @@ async def chat_flow(
 
     log.info("after_acquire g=%s key=%s restored=%s", g, key[:16], restored)
 
+    be_id, _mid, slot_id = g
+    client = clients[be_id]
+    decision["restore"]["used_key"] = used_key
+    decision["restore"]["outcome"] = restored
+    decision["slot"] = {"backend": be_id, "model": effective_model, "id": slot_id}
+    decision["slot_before_chat"] = await _snapshot_slot(client, slot_id, effective_model)
+
     # A restore is only attempted when a key was selected, so both branches
     # below imply used_key is a non-None string: the key actually restored
     # (the original candidate, or its substitution alias target).
@@ -987,16 +1126,16 @@ async def chat_flow(
         # subsumption that created the alias already deleted).
         try:
             await hs.delete_meta_async(used_key)
+            decision["restore"]["stale_meta_dropped"] = True
             log.info("stale_meta_dropped key=%s", used_key[:16])
         except Exception as e:  # noqa: BLE001
             log.warning("delete_meta_failed key=%s: %s", used_key[:16], e)
-    elif restored is False and used_key:
-        # A non-missing restore failure (transient error, backend down): the
-        # cache may still be valid and a retry can succeed, so keep the meta.
+    elif restored is not True and restored != RESTORE_MISSING and used_key:
+        # A non-missing restore failure: a plain False is a definitive miss,
+        # RESTORE_ERROR is "the restore request itself failed" (backend
+        # down/transient). In both cases the cache may still be valid and a
+        # retry can succeed, so keep the meta.
         log.warning("restore_failed_kept_meta key=%s", used_key[:16])
-
-    be_id, _mid, slot_id = g
-    client = clients[be_id]
 
     # A successful restore already set the slot's prompt to the correct prefix,
     # so it is left untouched. In every other case (small request, big request
@@ -1004,7 +1143,9 @@ async def chat_flow(
     # a stale or oversized prompt from a previous conversation; starting a chat
     # on top of it can wedge llama.cpp in PROCESSING_PROMPT (the slot never
     # finishes and the server busy-loops). Clear the slot first.
-    if restored is not True and ERASE_BEFORE_CHAT:
+    erase_done = restored is not True and ERASE_BEFORE_CHAT
+    decision["erase_done"] = erase_done
+    if erase_done:
         await client.erase_slot(slot_id, model=effective_model)
 
     body = dict(data)
@@ -1064,6 +1205,7 @@ async def chat_flow(
                 messages,
                 rid,
                 ts,
+                decision,
             )
             task_owns_slot = True
 
@@ -1133,6 +1275,7 @@ async def chat_flow(
                         response_reasoning_field,
                         rid,
                         ts,
+                        decision=decision,
                     )
                 )
                 _BG_SAVE_TASKS.add(save_task)
@@ -1142,6 +1285,8 @@ async def chat_flow(
                 # No background save for small requests: the saved
                 # conversation (the next message's match target) is computed
                 # in its own task so the response is not delayed.
+                decision["save"] = {"attempted": False}
+                _emit_decision(decision, rid, ts)
                 ptask = asyncio.create_task(
                     _log_prefix_group(
                         rid,
@@ -1180,3 +1325,11 @@ async def chat_flow(
         if not task_owns_slot:
             log.info("slot_release g=%s key=%s via=finally", g, key[:16])
             sm.release(g)
+            # Every path that did not hand the slot to a save/reader task ends
+            # here: error returns (provider failure, upstream error, exception)
+            # now persist the restore-phase diagnostics too — the very
+            # decision.json needed to debug failures. Save was never attempted,
+            # so mark it explicitly; _emit_decision is idempotent and no-ops
+            # when this request already emitted one.
+            decision.setdefault("save", {"attempted": False})
+            _emit_decision(decision, rid, ts)
