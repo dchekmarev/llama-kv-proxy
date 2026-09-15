@@ -205,6 +205,19 @@ STUCK_SLOT_THRESHOLD_S = _env_float("STUCK_SLOT_THRESHOLD_S", 1500)
 # off, keys are byte-identical to the legacy behavior (no cache churn).
 REASONING_IN_KEY = _env_bool("REASONING_IN_KEY", False)
 
+# Request/response/prefix logging directory: every /v1/chat/completions
+# request writes a group of JSON files (request/response/prefix, plus raw SSE
+# for streams) named {timestamp_ms}.{request_id}.{type}.json. Relative paths
+# are anchored to the app directory (like META_DIR). Empty disables logging.
+REQUEST_LOG_DIR = os.getenv("REQUEST_LOG_DIR", "kv_reqlog")
+if REQUEST_LOG_DIR:
+    if not os.path.isabs(REQUEST_LOG_DIR):
+        REQUEST_LOG_DIR = os.path.join(APP_DIR, REQUEST_LOG_DIR)
+    os.makedirs(REQUEST_LOG_DIR, exist_ok=True)
+# Max number of request groups kept in the directory; oldest groups (all their
+# files) are deleted first. 0 disables rotation (keep everything).
+REQUEST_LOG_MAX_GROUPS = _env_int("REQUEST_LOG_MAX_GROUPS", 100)
+
 # Service port
 PORT = _env_int("PORT", 8081)
 

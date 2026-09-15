@@ -142,7 +142,7 @@ async def test_small_json_writes_group(sm, reqlog_dir):
     groups = _groups(reqlog_dir)
     (g,) = groups
     assert g.endswith(".rid123")
-    assert groups[g] == {"request", "response", "prefix", "decision"}
+    assert groups[g] == {"request", "response", "prefix"}
 
     assert _read(reqlog_dir, f"{g}.request.json") == {
         "messages": [{"role": "user", "content": "hello"}],
@@ -171,7 +171,7 @@ async def test_big_json_prefix_from_bg_save(sm, meta_dir, reqlog_dir, monkeypatc
 
     groups = _groups(reqlog_dir)
     (g,) = groups
-    assert groups[g] == {"request", "response", "prefix", "decision"}
+    assert groups[g] == {"request", "response", "prefix"}
     prefix = _read(reqlog_dir, f"{g}.prefix.json")
     assert "user:hello world" in prefix["prefix"]
     assert "assistant:ans" in prefix["prefix"]
@@ -188,7 +188,7 @@ async def test_request_logged_on_provider_error(sm, reqlog_dir):
 
     groups = _groups(reqlog_dir)
     (g,) = groups
-    assert groups[g] == {"request", "decision"}
+    assert groups[g] == {"request"}
 
 
 # --- stream e2e -------------------------------------------------------------
@@ -218,7 +218,6 @@ async def _stream(sm, is_big, rid="rid123"):
         [{"role": "user", "content": "hi"}],
         rid,
         "123",
-        {"is_big": is_big},
     )
     received = [c async for c in gen]
     await _drain()
@@ -230,7 +229,7 @@ async def test_small_stream_writes_group(sm, reqlog_dir):
     assert received == _SSE
     (grp,) = _groups(reqlog_dir)
     assert grp == "123.rid123"
-    assert _groups(reqlog_dir)[grp] == {"response", "raw", "prefix", "decision"}
+    assert _groups(reqlog_dir)[grp] == {"response", "raw", "prefix"}
 
     resp = _read(reqlog_dir, f"{grp}.response.json")
     assert resp["content"] == "Hello"
@@ -249,7 +248,7 @@ async def test_big_stream_prefix_from_bg_save(sm, meta_dir, reqlog_dir):
     await _stream(sm, is_big=True)
     groups = _groups(reqlog_dir)
     (grp,) = groups
-    assert groups[grp] == {"response", "raw", "prefix", "decision"}
+    assert groups[grp] == {"response", "raw", "prefix"}
     prefix = _read(reqlog_dir, f"{grp}.prefix.json")
     assert "assistant:Hello" in prefix["prefix"]
     sm.backends[0]["client"].save_slot.assert_awaited_once()

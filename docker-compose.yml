@@ -13,6 +13,7 @@ services:
       - "8080:8080"
     volumes:
       - ./kv_meta:/app/kv_meta
+      - ./kv_reqlog:/app/kv_reqlog
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:

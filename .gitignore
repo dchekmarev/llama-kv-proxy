@@ -1,4 +1,5 @@
 kv_meta/
+kv_reqlog/
 venv/
 __pycache__/
 docker-compose.override.yml

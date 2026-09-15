@@ -47,6 +47,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import bin_cache
 import hashing as hs
+import reqlog
 from config import (
     ACQUIRE_TIMEOUT,
     BIG_THRESHOLD_WORDS,
@@ -61,6 +62,7 @@ from config import (
     WORDS_PER_BLOCK,
 )
 from llama_client import RESTORE_MISSING, LlamaClient
+from request_id import request_id_var
 from slot_manager import GSlot, SlotManager
 
 log = logging.getLogger(__name__)
@@ -307,6 +309,48 @@ async def _saved_conversation_values(
     )
 
 
+async def _log_prefix_group(
+    rid: str,
+    ts: str,
+    messages: list[dict],
+    model_id: str,
+    response_text: str,
+    response_reasoning: str,
+    response_reasoning_field: str,
+    prefix: str,
+    blocks: list[str],
+    prefix_hashes: list[str],
+) -> None:
+    """Write the group's prefix.json (fire-and-forget, never raises).
+
+    The prefix is the conversation actually stored (prompt + assistant
+    response): the text the next message's request will be matched against.
+    Used where the saved values are not computed elsewhere (small requests,
+    interrupted streams); big completed requests reuse the values the
+    background save already computed.
+    """
+    try:
+        saved_prefix, _saved_blocks, saved_hashes = await _saved_conversation_values(
+            messages,
+            response_text,
+            model_id,
+            prefix,
+            blocks,
+            prefix_hashes,
+            response_reasoning,
+            response_reasoning_field,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("reqlog_prefix_fail rid=%s: %s", rid, e)
+        return
+    reqlog.log_file(
+        "prefix",
+        rid,
+        ts,
+        {"prefix": saved_prefix, "key": saved_hashes[-1] if saved_hashes else None},
+    )
+
+
 async def _purge_backend_files(
     clients: list[LlamaClient], key_models: list[tuple[str, str | None]]
 ) -> None:
@@ -484,6 +528,8 @@ async def _background_save(
     response_text: str,
     response_reasoning: str = "",
     response_reasoning_field: str = "reasoning_content",
+    rid: str = "",
+    ts: str = "",
 ) -> None:
     """Non-stream big-request save+meta, run after the response is returned.
 
@@ -519,6 +565,19 @@ async def _background_save(
                 prefix,
                 blocks,
                 prefix_hashes,
+            )
+        # The request group's prefix.json reuses the values computed above
+        # (no second tokenization): the conversation the next message's
+        # request will be matched against.
+        if rid and ts:
+            reqlog.log_file(
+                "prefix",
+                rid,
+                ts,
+                {
+                    "prefix": saved_prefix,
+                    "key": saved_hashes[-1] if saved_hashes else None,
+                },
             )
         ok = await _save_and_write_meta(
             clients,
@@ -556,6 +615,8 @@ async def start_stream_task(
     prefix_hashes: list[str] | None = None,
     clients: list[LlamaClient] | None = None,
     messages: list[dict] | None = None,
+    rid: str = "",
+    ts: str = "",
 ) -> AsyncGenerator[bytes, None]:
     queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=STREAM_QUEUE_SIZE)
 
@@ -573,9 +634,12 @@ async def start_stream_task(
         # (gen's finally cancels the reader task) leaves this unset: the
         # client is already gone, so no error event is emitted.
         error_reason: str | None = None
-        decoder = codecs.getincrementaldecoder("utf-8")() if is_big else None
+        # Always decode: besides the assembled content (big requests) the raw
+        # SSE lines are captured for the request group's raw.json (all sizes).
+        decoder = codecs.getincrementaldecoder("utf-8")()
         sse_buffer = ""
         response_parts: list[str] = []
+        raw_parts: list[str] = []
         # Response reasoning trace (REASONING_IN_KEY only): captured from the
         # delta chunks so the save site can fold it into the saved
         # conversation; None keeps the flag-off path byte-identical.
@@ -601,23 +665,23 @@ async def start_stream_task(
                     error_reason = "consumer stalled: stream aborted after waiting for client"
                     log.warning("stream_reader_put_timeout g=%s key=%s", g, key[:16])
                     break
-                if decoder is not None:
-                    sse_buffer += decoder.decode(chunk)
-                    while "\n" in sse_buffer:
-                        line, sse_buffer = sse_buffer.split("\n", 1)
-                        field = _append_stream_content(
-                            line, response_parts, reasoning_parts
-                        )
-                        if field:
-                            reasoning_field = field
-            if decoder is not None:
-                sse_buffer += decoder.decode(b"", True)
-                if sse_buffer:
+                sse_buffer += decoder.decode(chunk)
+                while "\n" in sse_buffer:
+                    line, sse_buffer = sse_buffer.split("\n", 1)
+                    raw_parts.append(line + "\n")
                     field = _append_stream_content(
-                        sse_buffer, response_parts, reasoning_parts
+                        line, response_parts, reasoning_parts
                     )
                     if field:
                         reasoning_field = field
+            sse_buffer += decoder.decode(b"", True)
+            if sse_buffer:
+                raw_parts.append(sse_buffer)
+                field = _append_stream_content(
+                    sse_buffer, response_parts, reasoning_parts
+                )
+                if field:
+                    reasoning_field = field
             completed = not push_failed
         except asyncio.CancelledError:
             # Distinguish the two cancellation sources: a client disconnect
@@ -664,6 +728,41 @@ async def start_stream_task(
                         key[:16],
                         push_err,
                     )
+            # --- request group logging (response + raw SSE, always) ---
+            # Fire-and-forget: logging must not delay the slot release or the
+            # sentinel. Big completed streams get their prefix.json from the
+            # background save below (it reuses the values it computes); every
+            # other path (small, interrupted) computes them in its own task.
+            if rid and ts:
+                reqlog.log_file(
+                    "response",
+                    rid,
+                    ts,
+                    {
+                        "content": "".join(response_parts),
+                        "reasoning": "".join(reasoning_parts or []),
+                        "completed": completed,
+                        "error": error_reason,
+                    },
+                )
+                reqlog.log_file("raw", rid, ts, {"sse": "".join(raw_parts)})
+                if not (completed and is_big):
+                    ptask = asyncio.create_task(
+                        _log_prefix_group(
+                            rid,
+                            ts,
+                            messages or [],
+                            model_id,
+                            "".join(response_parts),
+                            "".join(reasoning_parts or []),
+                            reasoning_field,
+                            prefix,
+                            blocks,
+                            prefix_hashes or [],
+                        )
+                    )
+                    _BG_SAVE_TASKS.add(ptask)
+                    ptask.add_done_callback(_BG_SAVE_TASKS.discard)
             # --- slot ownership transfer ---
             # A big completed stream must save the KV cache, but the save
             # cannot run inline here: a client disconnect (hermes closes the
@@ -695,6 +794,8 @@ async def start_stream_task(
                             "".join(response_parts),
                             "".join(reasoning_parts or []),
                             reasoning_field,
+                            rid,
+                            ts,
                         )
                     )
                     _BG_SAVE_TASKS.add(save_task)
@@ -756,6 +857,13 @@ async def chat_flow(
 
     messages: list[dict] = data.get("messages") or []
     stream = bool(data.get("stream", False))
+
+    # Request group id: the correlation id (X-Request-ID or generated) plus a
+    # millisecond timestamp; every file of this request shares the prefix.
+    # The request body is logged up front so even failed requests are kept.
+    rid = request_id_var.get()
+    ts = reqlog.new_group_ts()
+    reqlog.log_file("request", rid, ts, data)
 
     # Effective model: the client's model, else the loaded model, else MODEL_ID.
     # This single value drives the cache key, the slot pool, and the request.
@@ -946,6 +1054,8 @@ async def chat_flow(
                 prefix_hashes,
                 clients,
                 messages,
+                rid,
+                ts,
             )
             task_owns_slot = True
 
@@ -988,13 +1098,17 @@ async def chat_flow(
                     status_code=_provider_error_status(out.get("status")),
                 )
 
+            # The full backend body is the group's response.json (both sizes);
+            # the assistant content is extracted for the prefix computation.
+            response_text, response_reasoning, response_reasoning_field = (
+                _assistant_content(out)
+            )
+            reqlog.log_file("response", rid, ts, out)
             if is_big:
                 # Save + meta + subsumed-meta cleanup (see the stream reader)
                 # runs in the background: the .bin write must not delay the
-                # JSON response. The task owns the slot and releases it.
-                response_text, response_reasoning, response_reasoning_field = (
-                    _assistant_content(out)
-                )
+                # JSON response. The task owns the slot and releases it, and
+                # writes the group's prefix.json (reusing its saved values).
                 save_task = asyncio.create_task(
                     _background_save(
                         clients,
@@ -1009,11 +1123,33 @@ async def chat_flow(
                         response_text,
                         response_reasoning,
                         response_reasoning_field,
+                        rid,
+                        ts,
                     )
                 )
                 _BG_SAVE_TASKS.add(save_task)
                 save_task.add_done_callback(_BG_SAVE_TASKS.discard)
                 task_owns_slot = True
+            else:
+                # No background save for small requests: the saved
+                # conversation (the next message's match target) is computed
+                # in its own task so the response is not delayed.
+                ptask = asyncio.create_task(
+                    _log_prefix_group(
+                        rid,
+                        ts,
+                        messages,
+                        effective_model,
+                        response_text,
+                        response_reasoning,
+                        response_reasoning_field,
+                        prefix,
+                        blocks,
+                        prefix_hashes,
+                    )
+                )
+                _BG_SAVE_TASKS.add(ptask)
+                ptask.add_done_callback(_BG_SAVE_TASKS.discard)
 
             log.info(
                 "json_done g=%s key=%s is_big=%s dur_ms=%d",

@@ -8,16 +8,11 @@ REQUEST_LOG_DIR, all sharing the {timestamp_ms}.{request_id} prefix:
 - {ts}.{rid}.request.json   the client request body as received
 - {ts}.{rid}.response.json  the backend response: the JSON body for
                             non-stream, or the assembled stream (content,
-                            reasoning, completion status, error) for streams,
-                            plus the final SSE usage/timings chunk when the
-                            backend sent one
+                            reasoning, completion status, error) for streams
 - {ts}.{rid}.prefix.json    the conversation prefix (prompt + assistant
                             response) that the next message's request will be
                             matched against, plus its cache key
 - {ts}.{rid}.raw.json       (stream only) the raw SSE stream as received
-- {ts}.{rid}.decision.json  the proxy's per-request cache decision: big/small,
-                            restore candidate + outcome, erase, slot KV state
-                            after restore, and the save result
 
 Only the newest REQUEST_LOG_MAX_GROUPS groups are kept: after every write the
 directory is rescanned and the oldest groups (all their files) are deleted.
@@ -39,7 +34,7 @@ from config import REQUEST_LOG_DIR, REQUEST_LOG_MAX_GROUPS
 log = logging.getLogger(__name__)
 
 # {timestamp_ms}.{request_id}.{type}.json — the group is the ts.rid prefix.
-_GROUP_RE = re.compile(r"^(\d+)\.([^.]+)\.(request|response|prefix|raw|decision)\.json$")
+_GROUP_RE = re.compile(r"^(\d+)\.([^.]+)\.(request|response|prefix|raw)\.json$")
 
 # Strong references to in-flight log-write tasks (the event loop keeps only
 # weak references; without this a task could be GC-collected before it runs
