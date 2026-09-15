@@ -443,6 +443,18 @@ async def _save_and_write_meta(
                                 k[:16],
                                 key[:16],
                             )
+                    # An existing alias whose target was just deleted would
+                    # otherwise terminate at a purged cache; re-point it to
+                    # this live key so _resolve_restore_key stays valid.
+                    deleted_set = set(deleted)
+                    for x, target in list(_RESTORE_ALIAS.items()):
+                        if target in deleted_set:
+                            _RESTORE_ALIAS[x] = key
+                            log.info(
+                                "restore_alias_repointed alias=%s replacement=%s",
+                                x[:16],
+                                key[:16],
+                            )
                     await _purge_backend_files(
                         clients or [], [(k, model_id) for k in deleted]
                     )

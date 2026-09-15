@@ -113,6 +113,34 @@ async def test_aliases_pending_key_on_subsumed_delete(meta_dir, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_alias_chain_repointed_when_target_deleted(meta_dir, monkeypatch):
+    # Step 1: h_ab is pending; saving h_abc subsumes it -> alias h_ab -> h_abc.
+    _write_prefix("h_ab", ["h_a", "h_ab"])
+    _patch(monkeypatch)
+    chat_flow._register_pending_restore("h_ab")
+
+    ok = await chat_flow._save_and_write_meta(
+        [], _sm(), ("g",), "h_abc", "p", [], ["h_a", "h_ab", "h_abc"], "m1"
+    )
+
+    assert ok is True
+    assert chat_flow._RESTORE_ALIAS["h_ab"] == "h_abc"
+
+    # Step 2: h_abc's meta is now on disk (step 1's mocked write, simulated);
+    # h_ab's waiter is still pending, h_abc is NOT pending. Saving h_abcd
+    # subsumes h_abc, so the stale h_ab -> h_abc alias must be re-pointed to
+    # h_abcd instead of terminating at the purged h_abc.
+    _write_prefix("h_abc", ["h_a", "h_ab", "h_abc"])
+
+    ok = await chat_flow._save_and_write_meta(
+        [], _sm(), ("g",), "h_abcd", "p", [], ["h_a", "h_ab", "h_abc", "h_abcd"], "m1"
+    )
+
+    assert ok is True
+    assert chat_flow._resolve_restore_key("h_ab") == "h_abcd"
+
+
+@pytest.mark.asyncio
 async def test_no_alias_without_pending(meta_dir, monkeypatch):
     _write_prefix("h_ab", ["h_a", "h_ab"])
     _patch(monkeypatch)
