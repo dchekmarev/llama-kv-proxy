@@ -774,46 +774,54 @@ async def start_stream_task(
             # (see _background_save): hand off the slot to a detached task
             # that owns the lock and releases it in its own finally.
             handed_off = False
+            # Create the detached save BEFORE the only await below (aclose):
+            # create_task is synchronous, so by the time aclose suspends the
+            # reader the save already exists and handed_off is set. A
+            # client-disconnect CancelledError delivered at aclose then skips
+            # nothing — the save survives the reader's cancellation and owns
+            # the slot. (Creating it after aclose lost the save to exactly that
+            # cancellation: handed_off stayed False and the slot was released
+            # with no .bin/meta written.)
+            if completed and is_big:
+                save_task = asyncio.create_task(
+                    _background_save(
+                        clients or [],
+                        sm,
+                        g,
+                        key,
+                        prefix,
+                        blocks,
+                        prefix_hashes or [],
+                        model_id,
+                        messages or [],
+                        "".join(response_parts),
+                        "".join(reasoning_parts or []),
+                        reasoning_field,
+                        rid,
+                        ts,
+                    )
+                )
+                _BG_SAVE_TASKS.add(save_task)
+                save_task.add_done_callback(_BG_SAVE_TASKS.discard)
+                handed_off = True
+                log.info(
+                    "stream_reader_save_handoff g=%s key=%s",
+                    g,
+                    key[:16],
+                )
+            else:
+                log.info(
+                    "stream_reader_done g=%s key=%s saved=%s completed=%s",
+                    g,
+                    key[:16],
+                    False,
+                    completed,
+                )
             try:
                 try:
                     await resp.aclose()
                 except Exception:  # noqa: BLE001, S110
                     pass
-                if completed and is_big:
-                    save_task = asyncio.create_task(
-                        _background_save(
-                            clients or [],
-                            sm,
-                            g,
-                            key,
-                            prefix,
-                            blocks,
-                            prefix_hashes or [],
-                            model_id,
-                            messages or [],
-                            "".join(response_parts),
-                            "".join(reasoning_parts or []),
-                            reasoning_field,
-                            rid,
-                            ts,
-                        )
-                    )
-                    _BG_SAVE_TASKS.add(save_task)
-                    save_task.add_done_callback(_BG_SAVE_TASKS.discard)
-                    handed_off = True
-                    log.info(
-                        "stream_reader_save_handoff g=%s key=%s",
-                        g,
-                        key[:16],
-                    )
-                else:
-                    log.info(
-                        "stream_reader_done g=%s key=%s saved=%s completed=%s",
-                        g,
-                        key[:16],
-                        False,
-                        completed,
-                    )
             finally:
                 if not handed_off:
                     log.info("slot_release g=%s key=%s via=stream", g, key[:16])
