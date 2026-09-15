@@ -12,7 +12,7 @@ and re-runs the search.
 
 Covered:
 - registry register/finish semantics (event set on finish, cleared on every
-  exit path, unknown keys are a no-op);
+  exit path, unknown keys are a no-op, re-registration is idempotent);
 - the wait: no match -> immediate False, completion -> True, timeout ->
   False, disabled (timeout 0) -> False;
 - end-to-end: M's save in flight -> M+1 waits and restores from M's key;
@@ -48,6 +48,19 @@ def test_register_finish_sets_event_and_clears_entry():
     assert not ev.is_set()
     chat_flow._finish_inflight_save(key)
     assert ev.is_set()
+    assert key not in chat_flow._INFLIGHT_SAVES
+
+
+def test_register_is_idempotent():
+    """A second registration must not replace the live event: waiters may
+    already be awaiting it (e.g. _background_save registers before
+    _save_and_write_meta re-registers the same key)."""
+    key = "k1"
+    chat_flow._register_inflight_save(key)
+    ev = chat_flow._INFLIGHT_SAVES[key]
+    chat_flow._register_inflight_save(key)
+    assert chat_flow._INFLIGHT_SAVES[key] is ev
+    chat_flow._finish_inflight_save(key)
     assert key not in chat_flow._INFLIGHT_SAVES
 
 

@@ -131,7 +131,11 @@ def _resolve_restore_key(key: str) -> str:
 
 
 def _register_inflight_save(key: str) -> None:
-    _INFLIGHT_SAVES[key] = asyncio.Event()
+    # Idempotent: _background_save registers the key before the response-hash
+    # phase and _save_and_write_meta re-registers it; the second call must not
+    # replace the live event that waiters are already awaiting.
+    if key not in _INFLIGHT_SAVES:
+        _INFLIGHT_SAVES[key] = asyncio.Event()
 
 
 def _finish_inflight_save(key: str) -> None:
@@ -476,8 +480,14 @@ async def _background_save(
     The task owns the slot: it releases it in the finally, even if the save
     or the meta write raises (the client already has its response, so the
     error is only logged).
+
+    The save is registered in _INFLIGHT_SAVES at the very start, before the
+    response-hash phase, so a continuation arriving right after the response
+    can wait for it (see _wait_for_inflight_save); the entry is cleared in
+    the finally on every exit path.
     """
     try:
+        _register_inflight_save(key)
         try:
             saved_prefix, saved_blocks, saved_hashes = (
                 await _saved_conversation_values(
@@ -513,6 +523,9 @@ async def _background_save(
     except Exception as e:  # noqa: BLE001
         log.warning("background_save_error g=%s key=%s: %s", g, key[:16], e)
     finally:
+        # Clear the in-flight entry on every exit path (a no-op when
+        # _save_and_write_meta already finished it).
+        _finish_inflight_save(key)
         # Release is guaranteed: a synchronous call that cannot be
         # interrupted; it runs even if a re-cancellation interrupts the save.
         log.info("slot_release g=%s key=%s via=bg_save", g, key[:16])
