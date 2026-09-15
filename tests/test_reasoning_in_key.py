@@ -550,8 +550,8 @@ async def _chat_keys(
     flags: list[bool] = []
     real = hs.request_prefix_values_async
 
-    async def spy(messages, model_id, wpb, include_reasoning=False):
-        result = await real(messages, model_id, wpb, include_reasoning)
+    async def spy(messages, model_id, wpb, include_reasoning=False, render_ctx=None):
+        result = await real(messages, model_id, wpb, include_reasoning, render_ctx)
         keys.append(result[1])
         flags.append(include_reasoning)
         return result

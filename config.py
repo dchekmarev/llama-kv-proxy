@@ -205,6 +205,25 @@ STUCK_SLOT_THRESHOLD_S = _env_float("STUCK_SLOT_THRESHOLD_S", 1500)
 # off, keys are byte-identical to the legacy behavior (no cache churn).
 REASONING_IN_KEY = _env_bool("REASONING_IN_KEY", False)
 
+# Top-level request fields folded into the cache key as a render-context
+# leader: they change the PROMPT the backend template renders (tools and
+# reasoning instructions land inside the system text), so two requests with
+# identical messages but different render params must not share a KV cache. The
+# leader is a "ctx:<sha256>" synthetic part prepended to the prefix, so
+# differently-rendered conversations diverge at block 0 and never match as
+# restore candidates.
+RENDER_CTX_FIELDS: tuple[str, ...] = (
+    "tools",
+    "reasoning_effort",
+    "enable_thinking",
+    "preserve_thinking",
+    "preserve_reasoning",
+    "auto_disable_thinking_with_tools",
+    "thinking_budget",
+    "reasoning_budget_tokens",
+    "chat_template_kwargs",
+)
+
 # Request/response/prefix logging directory: every /v1/chat/completions
 # request writes a group of JSON files (request/response/prefix, plus raw SSE
 # for streams) named {timestamp_ms}.{request_id}.{type}.json. Relative paths

@@ -34,7 +34,7 @@ async def test_chat_flow_computes_prefix_values_off_loop(sm, monkeypatch):
     stays responsive and the values are produced by request_prefix_values."""
     info = {}
 
-    def blocking_values(messages, model_id, wpb, include_reasoning=False):
+    def blocking_values(messages, model_id, wpb, include_reasoning=False, render_ctx=None):
         info["thread"] = threading.current_thread().ident
         time.sleep(0.3)
         return (
@@ -91,7 +91,7 @@ async def test_chat_flow_does_not_retokenize_for_word_count(sm, monkeypatch):
     calls = []
     real_values = hs.request_prefix_values
 
-    def counting_values(messages, model_id, wpb, include_reasoning=False):
+    def counting_values(messages, model_id, wpb, include_reasoning=False, render_ctx=None):
         calls.append((messages, model_id, wpb))
         return real_values(messages, model_id, wpb, include_reasoning)
 

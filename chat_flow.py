@@ -58,6 +58,7 @@ from config import (
     MIN_BIN_SIZE_VALID,
     MODEL_ID,
     REASONING_IN_KEY,
+    RENDER_CTX_FIELDS,
     SAVE_WAIT_TIMEOUT,
     WORDS_PER_BLOCK,
 )
@@ -242,6 +243,20 @@ def _provider_error_status(status: object) -> int:
     return 502
 
 
+def _render_ctx_of(data: dict) -> dict:
+    """The render-affecting request params (tools, reasoning_effort, ...).
+
+    These fields change the PROMPT the backend template renders (tools and
+    reasoning instructions land inside the system text), so they must be part
+    of the cache key: two requests with identical messages but different
+    render params must never share a KV cache. Explicit nulls and absent
+    fields are omitted, so their canonical form is empty.
+    """
+    return {
+        k: data[k] for k in RENDER_CTX_FIELDS if k in data and data[k] is not None
+    }
+
+
 def _reasoning_of(msg: dict) -> tuple[object, str]:
     """(reasoning value, field name) from a message/delta dict.
 
@@ -368,12 +383,15 @@ async def _saved_conversation_values(
     fallback_hashes: list[str],
     response_reasoning: str = "",
     response_reasoning_field: str = "reasoning_content",
+    render_ctx: dict | None = None,
 ) -> tuple[str, list[str], list[str]]:
     """Prefix values for the stored conversation, or prompt-only fallback.
 
     response_reasoning_field is the field name the backend used for the
     reasoning trace; the saved assistant message carries it under that name
-    so an echoed continuation request matches.
+    so an echoed continuation request matches. render_ctx is the SAME dict
+    the request side hashed with, so the saved meta's last prefix hash equals
+    the continuation request's key.
     """
     if not response_text and not (REASONING_IN_KEY and response_reasoning):
         return fallback_prefix, fallback_blocks, fallback_hashes
@@ -386,6 +404,7 @@ async def _saved_conversation_values(
         REASONING_IN_KEY,
         response_reasoning or None,
         response_reasoning_field,
+        render_ctx,
     )
 
 
@@ -400,6 +419,7 @@ async def _log_prefix_group(
     prefix: str,
     blocks: list[str],
     prefix_hashes: list[str],
+    render_ctx: dict | None = None,
 ) -> None:
     """Write the group's prefix.json (fire-and-forget, never raises).
 
@@ -419,6 +439,7 @@ async def _log_prefix_group(
             prefix_hashes,
             response_reasoning,
             response_reasoning_field,
+            render_ctx,
         )
     except Exception as e:  # noqa: BLE001
         log.warning("reqlog_prefix_fail rid=%s: %s", rid, e)
@@ -616,6 +637,7 @@ async def _background_save(
     rid: str = "",
     ts: str = "",
     decision: dict | None = None,
+    render_ctx: dict | None = None,
 ) -> None:
     """Non-stream big-request save+meta, run after the response is returned.
 
@@ -643,6 +665,7 @@ async def _background_save(
                     prefix_hashes,
                     response_reasoning,
                     response_reasoning_field,
+                    render_ctx,
                 )
             )
         except Exception as e:  # noqa: BLE001
@@ -708,6 +731,7 @@ async def start_stream_task(
     rid: str = "",
     ts: str = "",
     decision: dict | None = None,
+    render_ctx: dict | None = None,
 ) -> AsyncGenerator[bytes, None]:
     queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=STREAM_QUEUE_SIZE)
 
@@ -861,6 +885,7 @@ async def start_stream_task(
                             prefix,
                             blocks,
                             prefix_hashes or [],
+                            render_ctx,
                         )
                     )
                     _BG_SAVE_TASKS.add(ptask)
@@ -902,6 +927,7 @@ async def start_stream_task(
                         rid,
                         ts,
                         decision=decision,
+                        render_ctx=render_ctx,
                     )
                 )
                 _BG_SAVE_TASKS.add(save_task)
@@ -1009,8 +1035,11 @@ async def chat_flow(
     # All request-side prefix values in one pass, off the event loop: the
     # words are tokenized once (blocks + word count share them) and the
     # per-message prefix hashes are computed incrementally (O(n), not O(n^2)).
+    # The render-context leader (tools/reasoning params) is part of the prefix,
+    # so differently-rendered conversations never share a key.
+    render_ctx = _render_ctx_of(data)
     prefix, key, blocks, prefix_hashes, n_words = await hs.request_prefix_values_async(
-        messages, effective_model, WORDS_PER_BLOCK, REASONING_IN_KEY
+        messages, effective_model, WORDS_PER_BLOCK, REASONING_IN_KEY, render_ctx
     )
     is_big = n_words > BIG_THRESHOLD_WORDS
 
@@ -1023,6 +1052,7 @@ async def chat_flow(
         "n_words": n_words,
         "words_threshold": BIG_THRESHOLD_WORDS,
         "model": effective_model,
+        "render_ctx_sha256": hs.render_ctx_digest(render_ctx) or None,
         "restore": {
             "candidate_key": None,
             "candidate_ratio": None,
@@ -1206,6 +1236,7 @@ async def chat_flow(
                 rid,
                 ts,
                 decision,
+                render_ctx=render_ctx,
             )
             task_owns_slot = True
 
@@ -1276,6 +1307,7 @@ async def chat_flow(
                         rid,
                         ts,
                         decision=decision,
+                        render_ctx=render_ctx,
                     )
                 )
                 _BG_SAVE_TASKS.add(save_task)
@@ -1299,6 +1331,7 @@ async def chat_flow(
                         prefix,
                         blocks,
                         prefix_hashes,
+                        render_ctx,
                     )
                 )
                 _BG_SAVE_TASKS.add(ptask)
