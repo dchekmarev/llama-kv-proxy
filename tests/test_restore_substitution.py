@@ -175,13 +175,14 @@ async def test_bin_still_purged_even_when_alias_recorded(meta_dir, monkeypatch):
 async def test_acquire_resolves_restore_key():
     manager, client = _manager()
 
-    _g, _lock, restored = await manager.acquire_for_request(
+    _g, _lock, restored, used_key = await manager.acquire_for_request(
         "model1",
         "old_key",
         resolve_restore_key=lambda k: "replaced" if k == "old_key" else k,
     )
 
     assert restored is True
+    assert used_key == "replaced", "the resolved key must be surfaced to the caller"
     client.restore_slot.assert_awaited_once_with(0, "replaced", model="model1")
 
 
@@ -189,7 +190,8 @@ async def test_acquire_resolves_restore_key():
 async def test_acquire_no_resolve_when_none():
     manager, client = _manager()
 
-    _g, _lock, restored = await manager.acquire_for_request("model1", "key123")
+    _g, _lock, restored, used_key = await manager.acquire_for_request("model1", "key123")
 
     assert restored is True
+    assert used_key == "key123", "without substitution the used key is the original"
     client.restore_slot.assert_awaited_once_with(0, "key123", model="model1")

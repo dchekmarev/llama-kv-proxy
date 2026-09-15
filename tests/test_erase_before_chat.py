@@ -38,16 +38,17 @@ def sm(monkeypatch):
     client.chat_completions = AsyncMock(return_value={"choices": []})
     manager.set_clients([client])
     # Control the restore outcome directly instead of driving the hashing /
-    # restore-candidate machinery: acquire returns a fixed (g, lock, restored).
+    # restore-candidate machinery: acquire returns a fixed
+    # (g, lock, restored, used_key).
     manager.acquire_for_request = AsyncMock(
-        return_value=(G, asyncio.Lock(), None)
+        return_value=(G, asyncio.Lock(), None, None)
     )
     return manager
 
 
 async def _run(sm, monkeypatch, restored, flag: bool):
     client = sm.backends[0]["client"]
-    sm.acquire_for_request.return_value = (G, asyncio.Lock(), restored)
+    sm.acquire_for_request.return_value = (G, asyncio.Lock(), restored, None)
     monkeypatch.setattr(chat_flow, "ERASE_BEFORE_CHAT", flag)
     data = {"messages": [{"role": "user", "content": "hi"}], "stream": False}
     await chat_flow.chat_flow(sm, [client], data)

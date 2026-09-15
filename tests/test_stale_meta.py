@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import app as app_module
+import chat_flow
 import hashing as hs
 from llama_client import RESTORE_MISSING
 
@@ -113,3 +114,32 @@ async def test_meta_kept_when_restore_succeeds(sm, meta_dir, monkeypatch):
     await _chat(sm, content)
 
     delete_meta_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_meta_dropped_for_resolved_key_on_substitution(
+    sm, meta_dir, monkeypatch
+):
+    """Substitution K1->K2 + RESTORE_MISSING: the RESOLVED key's (K2) stale
+    meta must be dropped, not the original candidate's (K1) — the original's
+    meta was already deleted by the subsumption that created the alias, so
+    cleaning it is a no-op and leaves K2's stale meta behind for repeated
+    hopeless 404 restores."""
+    content = _big_content()
+    k1 = _write_meta_for(content, meta_dir)
+    k2 = "d" * 64  # replacement cache: meta on disk, .bin gone
+    hs.write_meta(k2, "p", ["b"], hs.WORDS_PER_BLOCK, "m1")
+
+    chat_flow._PENDING_RESTORES.clear()
+    chat_flow._RESTORE_ALIAS.clear()
+    chat_flow._register_pending_restore(k1)
+    chat_flow._RESTORE_ALIAS[k1] = k2
+
+    sm.backends[0]["client"].restore_slot = AsyncMock(return_value=RESTORE_MISSING)
+
+    delete_meta_async = AsyncMock()
+    monkeypatch.setattr(hs, "delete_meta_async", delete_meta_async)
+
+    await _chat(sm, content)
+
+    delete_meta_async.assert_awaited_once_with(k2)

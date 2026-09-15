@@ -37,18 +37,20 @@ def sm(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_acquire_without_restore(sm):
-    g, lock, restored = await sm.acquire_for_request("model1")
+    g, lock, restored, used_key = await sm.acquire_for_request("model1")
     assert g[0] == 0 and g[1] == "model1"
     assert lock.locked()
     assert restored is None
+    assert used_key is None, "no restore attempted -> no used key"
     sm.release(g)
     assert not lock.locked()
 
 
 @pytest.mark.asyncio
 async def test_acquire_with_restore(sm):
-    g, lock, restored = await sm.acquire_for_request("model1", "key123")
+    g, lock, restored, used_key = await sm.acquire_for_request("model1", "key123")
     assert restored is True
+    assert used_key == "key123"
     sm.backends[0]["client"].restore_slot.assert_awaited_once_with(
         g[2], "key123", model=g[1]
     )
@@ -63,8 +65,9 @@ async def test_restore_exception_does_not_leak_lock(sm):
     sm.backends[0]["client"].restore_slot = AsyncMock(
         side_effect=RuntimeError("backend down")
     )
-    g, lock, restored = await sm.acquire_for_request("model1", "key123")
+    g, lock, restored, used_key = await sm.acquire_for_request("model1", "key123")
     assert restored is False
+    assert used_key == "key123", "the key was attempted even though restore failed"
     assert lock.locked(), "slot stays with the request"
     sm.release(g)
     assert not lock.locked()
@@ -110,7 +113,7 @@ async def test_wait_for_timeout_releases_lock(sm):
 async def test_acquire_marks_slot_used(sm):
     """Occupying a slot is the 'last used' moment for LRU — even for small
     requests that never save."""
-    g, _, _ = await sm.acquire_for_request("model1")
+    g, _, _, _ = await sm.acquire_for_request("model1")
     try:
         assert sm._last_used[g] > 0, "acquire must mark the slot as used"
     finally:
@@ -122,7 +125,7 @@ async def test_failed_save_does_not_refresh_usage(sm, monkeypatch):
     """A failed save must not refresh the LRU mark."""
     fake = {"now": 1000.0}
     monkeypatch.setattr(sm_module.time, "time", lambda: fake["now"])
-    g, _, _ = await sm.acquire_for_request("model1")
+    g, _, _, _ = await sm.acquire_for_request("model1")
     ts_acquire = sm._last_used[g]
     try:
         sm.backends[0]["client"].save_slot = AsyncMock(return_value=False)
@@ -140,7 +143,7 @@ async def test_successful_save_refreshes_usage(sm, monkeypatch):
     """A successful save refreshes the LRU mark and passes the model."""
     fake = {"now": 1000.0}
     monkeypatch.setattr(sm_module.time, "time", lambda: fake["now"])
-    g, _, _ = await sm.acquire_for_request("model1")
+    g, _, _, _ = await sm.acquire_for_request("model1")
     ts_acquire = sm._last_used[g]
     try:
         fake["now"] = 2000.0
@@ -161,8 +164,8 @@ async def test_waiters_repick_on_release_no_pileup(sm):
     """2 slots, 2 holders, 4 waiters: releasing both slots must let two
     waiters re-pick and proceed. The old code queued every waiter on the
     oldest slot's lock, so only one waiter woke and the other slot idled."""
-    g1, _, _ = await sm.acquire_for_request("model1")
-    g2, _, _ = await sm.acquire_for_request("model1")
+    g1, _, _, _ = await sm.acquire_for_request("model1")
+    g2, _, _, _ = await sm.acquire_for_request("model1")
     assert g1 != g2
 
     waiters = [asyncio.create_task(sm.acquire_for_request("model1")) for _ in range(4)]
@@ -213,9 +216,10 @@ def test_models_do_not_share_slots(sm):
 @pytest.mark.asyncio
 async def test_empty_pool_falls_back_to_slot_zero(sm):
     """An undiscovered model (not loaded yet) pins slot 0 on the first backend."""
-    g, lock, restored = await sm.acquire_for_request("not-loaded-yet")
+    g, lock, restored, used_key = await sm.acquire_for_request("not-loaded-yet")
     assert g == (0, "not-loaded-yet", 0)
     assert restored is None
+    assert used_key is None
     sm.release(g)
     assert not lock.locked()
 

@@ -836,7 +836,7 @@ async def chat_flow(
         _register_pending_restore(restore_key)
     try:
         try:
-            g, _lock, restored = await asyncio.wait_for(
+            g, _lock, restored, used_key = await asyncio.wait_for(
                 sm.acquire_for_request(
                     effective_model,
                     restore_key if is_big else None,
@@ -860,21 +860,24 @@ async def chat_flow(
 
     log.info("after_acquire g=%s key=%s restored=%s", g, key[:16], restored)
 
-    # A restore is only attempted when restore_key is set, so both branches
-    # below imply restore_key is a non-None string.
-    if restored == RESTORE_MISSING and restore_key:
+    # A restore is only attempted when a key was selected, so both branches
+    # below imply used_key is a non-None string: the key actually restored
+    # (the original candidate, or its substitution alias target).
+    if restored == RESTORE_MISSING and used_key:
         # The backend explicitly reported the cache file is gone (404): the
         # meta is stale, delete it so every big request does not repeat a
-        # hopeless restore.
+        # hopeless restore. With substitution, used_key is the replacement
+        # whose .bin is gone, not the original candidate (whose meta the
+        # subsumption that created the alias already deleted).
         try:
-            await hs.delete_meta_async(restore_key)
-            log.info("stale_meta_dropped key=%s", restore_key[:16])
+            await hs.delete_meta_async(used_key)
+            log.info("stale_meta_dropped key=%s", used_key[:16])
         except Exception as e:  # noqa: BLE001
-            log.warning("delete_meta_failed key=%s: %s", restore_key[:16], e)
-    elif restored is False and restore_key:
+            log.warning("delete_meta_failed key=%s: %s", used_key[:16], e)
+    elif restored is False and used_key:
         # A non-missing restore failure (transient error, backend down): the
         # cache may still be valid and a retry can succeed, so keep the meta.
-        log.warning("restore_failed_kept_meta key=%s", restore_key[:16])
+        log.warning("restore_failed_kept_meta key=%s", used_key[:16])
 
     be_id, _mid, slot_id = g
     client = clients[be_id]
