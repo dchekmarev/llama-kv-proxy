@@ -405,6 +405,72 @@ async def test_reader_cancel_while_save_pending_does_not_kill_save(
     assert drained == chunks
 
 
+class BlockingAcloseResp:
+    """Backend that finishes streaming and then blocks inside aclose() until
+    cancelled: a deterministic entry point for a client disconnect arriving
+    exactly in the reader's last window (the aclose await that used to sit
+    between `completed` and the detached save-task creation)."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.in_aclose = asyncio.Event()
+        self.release_aclose = asyncio.Event()
+        self.closed = False
+
+    async def aiter_raw(self):
+        for c in self._chunks:
+            yield c
+
+    async def aclose(self):
+        self.in_aclose.set()
+        await self.release_aclose.wait()
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_disconnect_at_aclose_keeps_save(sm, monkeypatch):
+    """Regression (disconnect during the aclose window): a client disconnect
+    that cancels the reader exactly while it is suspended inside resp.aclose()
+    (after the stream completed) must not lose the KV save. The detached save
+    task is created before aclose, so it survives the reader's cancellation and
+    still releases the slot."""
+    import hashing
+
+    write_meta_async = AsyncMock()
+    monkeypatch.setattr(hashing, "write_meta_async", write_meta_async)
+
+    g = (0, "model", 0)
+    lock = await _acquire(sm, g)
+    chunks = [b"a", b"b", b"c"]
+    resp = BlockingAcloseResp(chunks)
+
+    gen = await chat_flow.start_stream_task(
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+    )
+    it = gen.__aiter__()
+    received = [await it.__anext__() for _ in chunks]
+
+    # The reader has finished the stream, created the save task (post-fix) and
+    # is now blocked inside aclose(): the exact old race window.
+    await asyncio.wait_for(resp.in_aclose.wait(), timeout=2.0)
+
+    # Client disconnect exactly here: aclose the generator, which cancels the
+    # reader. The consumer is gone (as in production), so the reader never
+    # pushes a sentinel — the already-detached save task must still run.
+    await it.aclose()
+
+    await _pump(0.5)
+
+    assert received == chunks, "all streamed chunks must be delivered"
+    assert not lock.locked(), "slot must be released by the background save"
+    assert sm.backends[0]["client"].save_slot.await_count == 1, (
+        "a disconnect during aclose must not skip the KV save"
+    )
+    write_meta_async.assert_awaited_once(), (
+        "meta must be written despite the reader being cancelled at aclose"
+    )
+
+
 @pytest.mark.asyncio
 async def test_reader_task_kept_alive_until_done(sm, no_meta):
     """The reader task must be tracked with a strong reference until it completes
