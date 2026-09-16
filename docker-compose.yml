@@ -19,6 +19,14 @@ services:
     environment:
       - PORT=8080
       - LOG_LEVEL=INFO
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+        reservations:
+          memory: 512M
+          cpus: "0.25"
     healthcheck:
       # Probe the port the app actually listens on (PORT env, default 8081).
       test: ["CMD", "python", "-c", "import json, os, sys, urllib.request; p = os.environ.get('PORT', '8081'); d = json.load(urllib.request.urlopen(f'http://localhost:{p}/proxy/health')); sys.exit(0 if d.get('ok') else 1)"]
