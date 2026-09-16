@@ -145,6 +145,13 @@ METRICS_TIMEOUT = _env_float("METRICS_TIMEOUT", 5)
 # Interval (seconds) between backend slot-state polls (GET /slots).
 SLOT_POLL_INTERVAL_S = _env_float("SLOT_POLL_INTERVAL_S", 30)
 
+# On-demand slot freshen: before a request picks a slot, re-poll the backends
+# serving its model so a slot cut/reload is observed within ~this window
+# instead of waiting for the periodic poll. Rate-limited per-(backend, model)
+# to at most once per interval: a slot topology change is a slow event, so a
+# sub-interval re-poll cannot see a different topology. 0 disables the freshen.
+SLOT_FRESHEN_INTERVAL_S = _env_float("SLOT_FRESHEN_INTERVAL_S", 1.0)
+
 # Cache eviction: TTL (hours), file count cap, total size cap (MB),
 # and the interval (seconds) between periodic eviction runs.
 # A cap of 0 disables that limit (same convention as BIN_CACHE_MAX_MB).

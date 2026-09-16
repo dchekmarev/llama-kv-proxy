@@ -36,5 +36,10 @@ def sm(monkeypatch):
     client.get_model_id_cached = AsyncMock(return_value="m1")
     client.get_loaded_model = AsyncMock(return_value="m1")
     client.chat_completions = AsyncMock(return_value={"choices": []})
+    # On-demand freshen: a plain backend whose re-poll reports no change (None
+    # keeps the existing pool), so the chat_flow hook is exercised without
+    # disturbing a test's set-up pool.
+    client.is_router = AsyncMock(return_value=False)
+    client.get_slots = AsyncMock(return_value=None)
     manager.set_clients([client])
     return manager

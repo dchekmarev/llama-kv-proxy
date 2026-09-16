@@ -1112,6 +1112,11 @@ async def chat_flow(
     # able to substitute the replacement cache before the slot is acquired.
     if is_big and restore_key is not None:
         _register_pending_restore(restore_key)
+    # Refresh the model's slot pools before picking a slot: a slot cut/reload on
+    # the backend is otherwise only seen at the next periodic poll, and a stale
+    # slot_id wraps onto a live physical slot (id % n_slots), risking a save/
+    # restore collision. Rate-limited and non-fatal inside freshen_model.
+    await sm.freshen_model(effective_model)
     try:
         try:
             g, _lock, restored, used_key = await asyncio.wait_for(

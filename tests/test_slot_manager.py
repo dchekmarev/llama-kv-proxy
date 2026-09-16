@@ -234,3 +234,130 @@ def test_aggregated_state_includes_model(sm):
     assert first["backend"] == 0
     assert first["model"] == "model1"
     assert first["last_used"] == 123.0
+
+
+# --- On-demand freshen (slot cut observed within ~1s, not at the next poll) ---
+
+
+@pytest.mark.asyncio
+async def test_freshen_replaces_pool_on_cut(sm):
+    """A freshen reporting fewer slots must REPLACE the pool and drop the stale
+    slot's bookkeeping — the stale id is what wraps onto a live physical slot."""
+    sm.set_backend_slots(0, "model1", [{"id": 0}, {"id": 1}, {"id": 2}])
+    sm._last_used[(0, "model1", 2)] = 123.0
+    client = sm.backends[0]["client"]
+    client.is_router = AsyncMock(return_value=False)
+    client.get_slots = AsyncMock(return_value=[{"id": 0}, {"id": 1}])
+
+    await sm.freshen_model("model1")
+
+    assert sm._pools[(0, "model1")] == [0, 1], "pool must be replaced, not merged"
+    assert (0, "model1", 2) not in sm._last_used, "stale slot LRU mark must be dropped"
+    assert (0, "model1", 2) not in sm._locks, "stale free slot lock must be dropped"
+    client.get_slots.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_freshen_throttled_per_pool(sm, monkeypatch):
+    """A burst of freshens within the interval triggers at most one re-poll;
+    after the interval elapses the next freshen polls again."""
+    fake = {"now": 1000.0}
+    monkeypatch.setattr(sm_module.time, "time", lambda: fake["now"])
+    client = sm.backends[0]["client"]
+    client.is_router = AsyncMock(return_value=False)
+    client.get_slots = AsyncMock(return_value=[{"id": 0}, {"id": 1}])
+
+    await sm.freshen_model("model1")
+    await sm.freshen_model("model1")
+    await sm.freshen_model("model1")
+    assert client.get_slots.await_count == 1, "throttle must hold within the interval"
+
+    fake["now"] = 1000.0 + sm_module.SLOT_FRESHEN_INTERVAL_S + 0.1
+    await sm.freshen_model("model1")
+    assert client.get_slots.await_count == 2, "must re-poll once the interval passes"
+
+
+@pytest.mark.asyncio
+async def test_freshen_non_fatal_on_error(sm):
+    """A failing re-poll must keep the existing pool and not raise."""
+    sm.set_backend_slots(0, "model1", [{"id": 0}, {"id": 1}])
+    client = sm.backends[0]["client"]
+    client.is_router = AsyncMock(return_value=False)
+    client.get_slots = AsyncMock(side_effect=RuntimeError("backend down"))
+
+    await sm.freshen_model("model1")  # must not raise
+
+    assert sm._pools[(0, "model1")] == [0, 1], "existing pool must be kept on error"
+
+
+@pytest.mark.asyncio
+async def test_freshen_non_fatal_on_malformed_body(sm):
+    """A malformed /slots body (non-dict entries) must not raise and must keep
+    the existing pool — set_backend_slots' s.get("id") is covered by the guard."""
+    sm.set_backend_slots(0, "model1", [{"id": 0}, {"id": 1}])
+    client = sm.backends[0]["client"]
+    client.is_router = AsyncMock(return_value=False)
+    client.get_slots = AsyncMock(return_value=[0, 1, 2])  # ints, not dicts
+
+    await sm.freshen_model("model1")  # must not raise
+
+    assert sm._pools[(0, "model1")] == [0, 1], "existing pool must be kept on malformed body"
+
+
+@pytest.mark.asyncio
+async def test_freshen_only_polls_serving_model(sm):
+    """Only the pool for the requested model is re-polled, not sibling models."""
+    sm.set_backend_slots(0, "model1", [{"id": 0}])
+    sm.set_backend_slots(0, "other", [{"id": 0}])
+    client = sm.backends[0]["client"]
+    client.is_router = AsyncMock(return_value=False)
+    client.get_slots = AsyncMock(return_value=[{"id": 0}])
+
+    await sm.freshen_model("model1")
+
+    assert client.get_slots.await_count == 1, "sibling model pool must not be polled"
+    client.get_slots.assert_awaited_with(), "plain backend: no model arg"
+
+
+@pytest.mark.asyncio
+async def test_freshen_router_passes_model(sm):
+    """A router backend is re-polled with the target model."""
+    client = sm.backends[0]["client"]
+    client.is_router = AsyncMock(return_value=True)
+    client.get_slots = AsyncMock(return_value=[{"id": 0}, {"id": 1}])
+
+    await sm.freshen_model("model1")
+
+    client.get_slots.assert_awaited_once_with(model="model1")
+
+
+# --- Hygiene: bookkeeping for slots that leave the pool ---
+
+
+def test_set_backend_slots_drops_removed_free_slot(sm):
+    """Removing a free slot from the pool drops its lock and LRU mark."""
+    sm.set_backend_slots(0, "model1", [{"id": 0}, {"id": 1}, {"id": 2}])
+    sm._last_used[(0, "model1", 2)] = 55.0
+    sm._lock_for((0, "model1", 2))  # ensure a (free) lock exists
+
+    sm.set_backend_slots(0, "model1", [{"id": 0}, {"id": 1}])
+
+    assert (0, "model1", 2) not in sm._locks
+    assert (0, "model1", 2) not in sm._last_used
+
+
+@pytest.mark.asyncio
+async def test_release_drops_bookkeeping_for_cut_slot(sm):
+    """A slot cut from the pool while held is cleaned up on release (the held
+    lock could not be dropped by set_backend_slots)."""
+    sm.set_backend_slots(0, "model1", [{"id": 0}, {"id": 1}, {"id": 2}])
+    g, lock, _, _ = await sm.acquire_for_request("model1")
+    assert lock.locked()
+
+    remaining = [{"id": s} for s in (0, 1, 2) if s != g[2]]
+    sm.set_backend_slots(0, "model1", remaining)  # cut the held slot
+
+    sm.release(g)
+
+    assert g not in sm._locks, "cut slot lock must be dropped on release"
+    assert g not in sm._last_used, "cut slot LRU mark must be dropped on release"
