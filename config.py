@@ -160,6 +160,17 @@ META_MAX_FILES = _env_int("META_MAX_FILES", 1000)
 META_MAX_MB = _env_int("META_MAX_MB", 512)
 EVICT_INTERVAL_S = _env_float("EVICT_INTERVAL_S", 3600)
 
+# In-memory restore index (the "B+A" design): an in-RAM hash->key index built
+# from the metas' per-message prefix hashes, so a restore search is an O(n) set
+# lookup (walk the request's prefix hashes from the longest, take the first
+# known meta) instead of scanning and JSON-parsing every meta file. Off by
+# default (no behavior change); the on-disk two-tier scan stays the fallback.
+META_INDEX_ENABLED = _env_bool("META_INDEX_ENABLED", False)
+# Interval (seconds) between index<->disk reconciliations: drops ghost entries
+# left by external meta deletions (bin_cache reconcile/clean remove files
+# without notifying the index). 0 disables the periodic reconcile.
+META_INDEX_RECONCILE_INTERVAL_S = _env_float("META_INDEX_RECONCILE_INTERVAL_S", 300)
+
 # Backend .bin cache directory (mounted from the host --slot-save-path).
 # Empty disables direct .bin cleanup.
 BIN_CACHE_DIR = os.getenv("BIN_CACHE_DIR", "")
