@@ -60,6 +60,8 @@ llama.cpp intentionally has no endpoint to delete files from `--slot-save-path` 
 
 Orphaned `.bin` files (no matching `.meta`) are removed first. A `.bin` written within the last `BIN_SAVE_GRACE_S` seconds is treated as an in-flight save and skipped. Every `BIN_RECONCILE_INTERVAL_S` seconds the proxy reconciles in both directions: stale metas without a `.bin` and orphaned `.bin` files without a meta are removed.
 
+llama.cpp may also write a `.ckpt` prompt-checkpoint sidecar next to each saved slot blob (see [ggml-org/llama.cpp#24028](https://github.com/ggml-org/llama.cpp/pull/24028)). The proxy treats the sidecar as part of its `.bin`: its size counts toward the `BIN_CACHE_MAX_MB` cap, it is evicted together with the `.bin`, and a `.ckpt` whose `.bin` is gone is dropped as an orphan (fresh ones are protected by the `BIN_SAVE_GRACE_S` window).
+
 ### Router backends
 
 A router backend (`llama-server --models-preset`) serves each model on its own child process with its own slots. The proxy discovers per-model slots via `GET /slots?model=X` and keys slot pools by `(backend, model, slot)`, so the same slot id is a different physical slot per model. `n_slots` in `BACKENDS` is only a bootstrap hint, not functional.
