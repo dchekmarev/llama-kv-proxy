@@ -13,6 +13,7 @@ import pytest
 import app as app_module
 import hashing as hs
 import meta_index
+import promstats
 
 # ---- fixtures / helpers -----------------------------------------------------
 
@@ -26,7 +27,7 @@ def _touch(meta_dir, key):
 def fresh_index(monkeypatch):
     """A clean index and tier counters (flag left at its default, off)."""
     monkeypatch.setattr(hs, "_index", meta_index.MetaIndex())
-    monkeypatch.setattr(hs, "_tier_counts", {"index": 0, "t1_disk": 0, "t2_blocks": 0})
+    promstats.reset()
     yield hs._index
 
 

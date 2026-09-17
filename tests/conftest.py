@@ -13,8 +13,17 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import hashing as hs
+import promstats
 import slot_manager as sm_module
 from slot_manager import SlotManager
+
+
+@pytest.fixture(autouse=True)
+def _clean_prom_registry():
+    """Isolate the proxy metrics registry between tests."""
+    promstats.reset()
+    yield
+    promstats.reset()
 
 
 @pytest.fixture()

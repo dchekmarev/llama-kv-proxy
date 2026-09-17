@@ -16,6 +16,7 @@ the remaining models are still reported.
 import asyncio
 import logging
 
+import promstats
 from llama_client import LlamaClient
 
 log = logging.getLogger(__name__)
@@ -200,6 +201,9 @@ async def collect(
         parts: list = []
         for m, raw in zip(models, raws):
             if isinstance(raw, BaseException):
+                promstats.backend_scrape_failures_total.labels(
+                    backend=str(be_id)
+                ).inc()
                 log.warning(
                     "metrics_fetch_fail backend=%d model=%s: %s", be_id, m, raw
                 )
@@ -214,9 +218,12 @@ async def collect(
         return_exceptions=True,
     )
     flat: list = []
-    for r in results:
+    for be_id, r in enumerate(results):
         if isinstance(r, BaseException):
-            log.warning("metrics_client_fail: %s", r)
+            promstats.backend_scrape_failures_total.labels(
+                backend=str(be_id)
+            ).inc()
+            log.warning("metrics_client_fail backend=%d: %s", be_id, r)
         else:
             flat.extend(r)
     return merge(flat)

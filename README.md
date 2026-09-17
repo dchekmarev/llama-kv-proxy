@@ -20,7 +20,7 @@ llama.cpp provides "slots," each holding a conversation's KV cache, so repeated 
 - Disk persistence: llama.cpp slot save/restore plus local `.meta` descriptors — survives restarts
 - Automatic cache hygiene: TTL/count/size eviction, superseded-cache cleanup, `.bin` LRU size cap, meta/.bin reconciliation
 - Multi-backend and router (`--models-preset`) support with per-model slot pools
-- Prometheus `/metrics` aggregating all backends and models with `model`/`backend` labels
+- Prometheus `/metrics`: proxy-level `llama_kv_proxy_*` metrics plus backend `/metrics` aggregated across all backends and models with `model`/`backend` labels
 - Docker Compose packaging with a healthcheck
 
 ## How it works
@@ -187,8 +187,36 @@ All parameters are environment variables; defaults in parentheses.
 | GET | `/proxy/health` | Backend availability probe plus slot state. |
 | GET | `/cache/stats` | Cache file count, total size, hit/miss counters. |
 | POST | `/cache/clear` | Delete all local meta files (and best-effort purge backend `.bin` files). |
-| GET | `/metrics` | Prometheus target: merged backend `/metrics` across all active (loaded) models, each metric carrying `model` and `backend` labels. `?model=X` filters to a single model. A down backend/model is skipped, never failing the scrape. |
+| GET | `/metrics` | Prometheus target: proxy `llama_kv_proxy_*` metrics followed by the merged backend `/metrics` across all active (loaded) models, each backend metric carrying `model` and `backend` labels. `?model=XA down backend/model is skipped, never failing the scrape. |
 | any | `/{path}` | Forwarded to the first backend as-is (native llama.cpp endpoints: `/slots?model=...`, `/health`, `/tokenize`, …), with the response streamed back. |
+
+## Metrics
+
+`/metrics` serves two halves: the proxy's own `llama_kv_proxy_*` metrics (a dedicated registry, so they never collide with backend names) and the merged backend `llama_server_*` text.
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `llama_kv_proxy_requests_total` | counter | `model`, `stream`, `outcome` | Chat requests by outcome: `ok`, `error`, `acquire_timeout`, `client_disconnect`. |
+| `llama_kv_proxy_request_duration_seconds` | histogram | `model`, `stream` | Total request duration (start to response end). |
+| `llama_kv_proxy_ttft_seconds` | histogram | `model`, `stream` | Time to first token; for non-stream it equals the total duration. |
+| `llama_kv_proxy_tokens_total` | counter | `model`, `kind` | Backend-reported tokens: `prompt`, `completion`, `cached`. |
+| `llama_kv_proxy_restore_total` | counter | `model`, `outcome` | Restore candidate selection for big requests: `hit` / `miss`. |
+| `llama_kv_proxy_restore_ratio` | histogram | `model` | Fraction of the prompt covered by the restored cache. |
+| `llama_kv_proxy_slot_wait_seconds` | histogram | `model` | Time spent acquiring a backend slot. |
+| `llama_kv_proxy_saves_total` | counter | `model`, `outcome` | KV saves after big requests: `ok`, `save_error`, `save_failed`, `empty_capture`. |
+| `llama_kv_proxy_save_duration_seconds` | histogram | `model` | Backend slot save duration. |
+| `llama_kv_proxy_meta_files` / `llama_kv_proxy_meta_bytes` | gauge | — | Meta files on disk (count / total bytes); refreshed after startup, eviction, reconciliation and `/cache/clear`. |
+| `llama_kv_proxy_bin_bytes` | gauge | — | Total `.bin` cache size on disk; refreshed as above. |
+| `llama_kv_proxy_slots_total` | gauge | `backend`, `model`, `state` | Backend slots by state from the `/slots` poll. |
+| `llama_kv_proxy_backend_up` | gauge | `backend` | Backend reachability from the slot poll (1 up, 0 down). |
+| `llama_kv_proxy_stuck_slot_erases_total` | counter | `backend`, `model` | Slots erased by the stuck-slot watchdog. |
+| `llama_kv_proxy_evictions_total` | counter | `reason` | Cache entries deleted: `evict`, `clear`, `subsumed`, `lru`, `reconcile`, `bin_clear`, `stale`. |
+| `llama_kv_proxy_restore_tier_total` | counter | `tier` | Restore hits by search tier: `index`, `t1_disk`, `t2_blocks`. |
+| `llama_kv_proxy_stale_meta_drops_total` | counter | `model` | Stale metas dropped after a restore reported the `.bin` missing. |
+| `llama_kv_proxy_inflight_save_waits_total` | counter | `model`, `result` | Continuations that waited for an in-flight save: `hit` / `miss`. |
+| `llama_kv_proxy_backend_scrape_failures_total` | counter | `backend` | Backend `/metrics` scrape failures. |
+
+Label cardinality is bounded by design: `model`, `backend`, `stream`, `outcome`, `tier`, `reason` and `state` are small fixed sets; request ids and cache keys never appear in labels.
 
 ## Project structure
 
@@ -202,7 +230,8 @@ All parameters are environment variables; defaults in parentheses.
 | `llama_client.py` | HTTP client for llama.cpp: chat, slot save/restore/erase, models, metrics |
 | `hashing.py` | Prefix/block hashing, meta files, two-tier matching, eviction |
 | `bin_cache.py` | Direct `.bin` cleanup, LRU size cap, meta/.bin reconciliation |
-| `metrics.py` | Prometheus aggregation across backends/models |
+| `metrics.py` | Prometheus aggregation of backend `/metrics` across backends/models |
+| `promstats.py` | Proxy-level `llama_kv_proxy_*` metrics (dedicated registry) and storage gauges |
 | `request_id.py` | Per-request correlation id (ContextVar + log filter) |
 | `reqlog.py` | Request/response/prefix JSON logging with group rotation |
 | `version.py` | Single source of truth for the proxy version |

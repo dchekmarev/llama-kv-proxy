@@ -47,6 +47,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import bin_cache
 import hashing as hs
+import promstats
 import reqlog
 from config import (
     ACQUIRE_TIMEOUT,
@@ -200,6 +201,20 @@ def _set_save_outcome(decision: dict | None, **kw: object) -> None:
     """Record the save result in the decision dict (no-op without one)."""
     if decision is not None:
         decision["save"] = {"attempted": True, **kw}
+
+
+def _record_tokens(model_id: str, usage: dict | None) -> None:
+    """Count backend-reported tokens (prompt/completion/cached) into metrics."""
+    if not isinstance(usage, dict):
+        return
+    for key, kind in (
+        ("prompt_tokens", "prompt"),
+        ("completion_tokens", "completion"),
+        ("prompt_cached_tokens", "cached"),
+    ):
+        v = usage.get(key)
+        if isinstance(v, (int, float)) and v > 0:
+            promstats.tokens_total.labels(model=model_id, kind=kind).inc(v)
 
 
 async def _snapshot_slot(
@@ -532,9 +547,11 @@ async def _save_and_write_meta(
             ok = await sm.save_after(g, key)
         except Exception as e:  # noqa: BLE001
             log.warning("save_after_exception g=%s key=%s: %s", g, key[:16], e)
+            promstats.saves_total.labels(model=model_id, outcome="save_error").inc()
             _set_save_outcome(decision, success=False, phase="save_error")
             return False
         if not ok:
+            promstats.saves_total.labels(model=model_id, outcome="save_failed").inc()
             _set_save_outcome(decision, success=False, phase="save_failed")
             return False
         bin_size = bin_cache.get_bin_size(BIN_CACHE_DIR, key) if BIN_CACHE_DIR else None
@@ -553,6 +570,7 @@ async def _save_and_write_meta(
                 bin_cache.delete_bin_file(BIN_CACHE_DIR, key)
             except Exception:  # noqa: BLE001
                 pass
+            promstats.saves_total.labels(model=model_id, outcome="empty_capture").inc()
             _set_save_outcome(decision, success=False, phase="empty_capture", bin_size_bytes=bin_size)
             return False
         meta_written = False
@@ -614,6 +632,7 @@ async def _save_and_write_meta(
                     )
             except Exception as e:  # noqa: BLE001
                 log.warning("delete_subsumed_exception key=%s: %s", key[:16], e)
+        promstats.saves_total.labels(model=model_id, outcome="ok").inc()
         _set_save_outcome(decision, success=True, meta_written=meta_written, bin_size_bytes=bin_size)
         _schedule_lru_check()
         return True
@@ -732,7 +751,10 @@ async def start_stream_task(
     ts: str = "",
     decision: dict | None = None,
     render_ctx: dict | None = None,
+    t0: float | None = None,
 ) -> AsyncGenerator[bytes, None]:
+    """t0: the request start (time.monotonic); when given, the reader records
+    the request duration, TTFT, outcome and token metrics in its finally."""
     queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=STREAM_QUEUE_SIZE)
 
     async def reader():
@@ -768,10 +790,19 @@ async def start_stream_task(
         # must match the restored prefix. None until/unless the backend sent it.
         stream_usage: dict | None = None
         stream_timings: dict | None = None
+        # Time to first token (request start to first backend chunk), or None
+        # when no chunk arrived (or t0 was not provided).
+        ttft: float | None = None
+        # True when the reader was cancelled from outside (client disconnect):
+        # set in the CancelledError handler, read in the finally to pick the
+        # request outcome.
+        externally_cancelled = False
         try:
             async for chunk in resp.aiter_raw():
                 if not chunk:
                     continue
+                if ttft is None and t0 is not None:
+                    ttft = time.monotonic() - t0
                 try:
                     await asyncio.wait_for(queue.put(chunk), timeout=STREAM_PUT_TIMEOUT)
                 except asyncio.TimeoutError:
@@ -832,6 +863,29 @@ async def start_stream_task(
             log.exception("stream_reader_error g=%s key=%s", g, key[:16])
             error_reason = str(e)
         finally:
+            # Request metrics, recorded first (synchronously, before any await
+            # below) so a cancellation delivered during cleanup cannot skip
+            # them. Outcome: a client-disconnect cancellation is reported as
+            # client_disconnect; any other interruption (backend error, push
+            # timeout) is an error; a clean read-to-the-end is ok.
+            if t0 is not None:
+                if externally_cancelled:
+                    outcome = "client_disconnect"
+                elif error_reason is not None:
+                    outcome = "error"
+                else:
+                    outcome = "ok"
+                promstats.requests_total.labels(
+                    model=model_id, stream="true", outcome=outcome
+                ).inc()
+                promstats.request_duration_seconds.labels(
+                    model=model_id, stream="true"
+                ).observe(time.monotonic() - t0)
+                if ttft is not None:
+                    promstats.ttft_seconds.labels(
+                        model=model_id, stream="true"
+                    ).observe(ttft)
+                _record_tokens(model_id, stream_usage)
             # Signal the mid-stream failure to the client exactly once (single
             # push site, guarded by error_reason): without this the stream
             # would end silently (no [DONE], no error) and the client could
@@ -994,6 +1048,7 @@ async def chat_flow(
     Returns the FastAPI response (JSON or streaming).
     """
     t0 = time.time()
+    t0_mono = time.monotonic()
 
     messages: list[dict] = data.get("messages") or []
     stream = bool(data.get("stream", False))
@@ -1043,6 +1098,11 @@ async def chat_flow(
     )
     is_big = n_words > BIG_THRESHOLD_WORDS
 
+    def _req_outcome(outcome: str) -> None:
+        promstats.requests_total.labels(
+            model=effective_model, stream="true" if stream else "false", outcome=outcome
+        ).inc()
+
     # Per-request cache decision, threaded through the request pipeline and
     # finally persisted as decision.json by whichever task finishes last
     # (restore phase here, save outcome in the background save or the stream
@@ -1078,11 +1138,15 @@ async def chat_flow(
             # The previous message's save finished while we waited: its meta
             # is on disk now, search again before declaring a miss.
             cand = await _find_restore_candidate(prefix_hashes, blocks, effective_model)
+            promstats.inflight_save_waits_total.labels(
+                model=effective_model, result="hit" if cand else "miss"
+            ).inc()
         if cand:
             restore_key, restore_ratio = cand
             decision["restore"]["candidate_key"] = restore_key
             decision["restore"]["candidate_ratio"] = restore_ratio
-            hs.record_hit()
+            hs.record_hit(effective_model)
+            promstats.restore_ratio.labels(model=effective_model).observe(restore_ratio)
             # Refresh the meta timestamp so an actively used entry survives
             # TTL eviction.
             await asyncio.to_thread(hs.touch_meta, restore_key)
@@ -1092,7 +1156,7 @@ async def chat_flow(
                 restore_ratio,
             )
         else:
-            hs.record_miss()
+            hs.record_miss(effective_model)
             log.info("restore_candidate none")
     else:
         log.info(
@@ -1117,6 +1181,7 @@ async def chat_flow(
     # slot_id wraps onto a live physical slot (id % n_slots), risking a save/
     # restore collision. Rate-limited and non-fatal inside freshen_model.
     await sm.freshen_model(effective_model)
+    t_acq = time.monotonic()
     try:
         try:
             g, _lock, restored, used_key = await asyncio.wait_for(
@@ -1133,6 +1198,10 @@ async def chat_flow(
                 is_big,
                 restore_key[:16] if restore_key else None,
             )
+            promstats.requests_total.labels(
+                model=effective_model, stream="true" if stream else "false",
+                outcome="acquire_timeout",
+            ).inc()
             return JSONResponse(
                 {"error": "all slots busy, please retry later"},
                 status_code=503,
@@ -1140,6 +1209,9 @@ async def chat_flow(
     finally:
         if is_big and restore_key:
             _unregister_pending_restore(restore_key)
+    promstats.slot_wait_seconds.labels(model=effective_model).observe(
+        time.monotonic() - t_acq
+    )
 
     log.info("after_acquire g=%s key=%s restored=%s", g, key[:16], restored)
 
@@ -1162,6 +1234,8 @@ async def chat_flow(
         try:
             await hs.delete_meta_async(used_key)
             decision["restore"]["stale_meta_dropped"] = True
+            promstats.stale_meta_drops_total.labels(model=effective_model).inc()
+            promstats.evictions_total.labels(reason="stale").inc()
             log.info("stale_meta_dropped key=%s", used_key[:16])
         except Exception as e:  # noqa: BLE001
             log.warning("delete_meta_failed key=%s: %s", used_key[:16], e)
@@ -1221,6 +1295,9 @@ async def chat_flow(
             if resp.status_code != 200:
                 err_txt = await resp.aread()
                 await resp.aclose()
+                promstats.requests_total.labels(
+                    model=effective_model, stream="true", outcome="error"
+                ).inc()
                 return JSONResponse(
                     {"error": err_txt.decode("utf-8", "ignore")},
                     status_code=_provider_error_status(resp.status_code),
@@ -1242,6 +1319,7 @@ async def chat_flow(
                 ts,
                 decision,
                 render_ctx=render_ctx,
+                t0=t0_mono,
             )
             task_owns_slot = True
 
@@ -1262,6 +1340,7 @@ async def chat_flow(
                 stream=False,
             )
             if not isinstance(out, dict):
+                _req_outcome("error")
                 return JSONResponse(
                     {"error": "provider non-JSON body"},
                     status_code=502,
@@ -1279,6 +1358,7 @@ async def chat_flow(
                 body = {"error": out.get("message") or "provider error"}
                 if out.get("raw"):
                     body["raw"] = out["raw"]
+                _req_outcome("error")
                 return JSONResponse(
                     body,
                     status_code=_provider_error_status(out.get("status")),
@@ -1342,6 +1422,17 @@ async def chat_flow(
                 _BG_SAVE_TASKS.add(ptask)
                 ptask.add_done_callback(_BG_SAVE_TASKS.discard)
 
+            # Non-stream: the whole answer arrived at once, so the time to
+            # first token equals the total duration.
+            _record_tokens(effective_model, out.get("usage"))
+            dur = time.monotonic() - t0_mono
+            promstats.request_duration_seconds.labels(
+                model=effective_model, stream="false"
+            ).observe(dur)
+            promstats.ttft_seconds.labels(
+                model=effective_model, stream="false"
+            ).observe(dur)
+            _req_outcome("ok")
             log.info(
                 "json_done g=%s key=%s is_big=%s dur_ms=%d",
                 g,
@@ -1355,9 +1446,11 @@ async def chat_flow(
         # A connect/timeout failure: no backend response at all, so this is a
         # genuine upstream failure (502), not a proxy bug (500).
         log.exception("chat_upstream_error g=%s key=%s", g, key[:16])
+        _req_outcome("error")
         return JSONResponse({"error": str(e)}, status_code=502)
     except Exception as e:
         log.exception("chat_error g=%s key=%s", g, key[:16])
+        _req_outcome("error")
         return JSONResponse({"error": str(e)}, status_code=500)
     finally:
         if not task_owns_slot:

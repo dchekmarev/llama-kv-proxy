@@ -13,6 +13,7 @@ import pytest
 import app as app_module
 import chat_flow
 import hashing as hs
+import promstats
 import slot_manager as sm_module
 from llama_client import LlamaClient
 from slot_manager import SlotManager
@@ -34,9 +35,9 @@ def sm(monkeypatch):
 
 
 @pytest.fixture()
-def counters(monkeypatch):
-    monkeypatch.setattr(hs, "_hits", 0)
-    monkeypatch.setattr(hs, "_misses", 0)
+def counters():
+    promstats.reset()
+    yield
 
 
 def _write_meta(dirpath, key: str, mtime: float | None = None) -> str:
@@ -178,9 +179,9 @@ async def test_clear_all_meta(meta_dir, counters):
 async def test_cache_stats(meta_dir, counters):
     """cache_stats reports file count, size, and hit/miss counters."""
     _write_meta(meta_dir, "a")
-    hs.record_hit()
-    hs.record_hit()
-    hs.record_miss()
+    hs.record_hit("m1")
+    hs.record_hit("m1")
+    hs.record_miss("m1")
 
     stats = hs.cache_stats()
 

@@ -19,6 +19,7 @@ import logging
 import os
 import time
 
+import promstats
 from config import BIN_SAVE_GRACE_S, META_DIR
 
 log = logging.getLogger(__name__)
@@ -126,6 +127,8 @@ def clean_bin_cache(dir: str, max_mb: int) -> dict:
             log.warning("bin_cache_remove_fail %s: %s", path, e)
 
     remaining = len(entries) - len(deleted)
+    if deleted:
+        promstats.evictions_total.labels(reason="lru").inc(len(deleted))
     log.info("bin_cache_clean deleted=%d remaining=%d", len(deleted), remaining)
     return {"deleted": deleted, "remaining": remaining}
 
@@ -182,6 +185,8 @@ def clear_bin_cache(dir: str) -> int:
             )
         except OSError as e:
             log.warning("bin_cache_clear_fail %s: %s", path, e)
+    if deleted:
+        promstats.evictions_total.labels(reason="bin_clear").inc(deleted)
     log.info("bin_cache_clear deleted=%d", deleted)
     return deleted
 
@@ -240,6 +245,9 @@ def reconcile_bin_cache(dir: str) -> dict:
         except OSError as e:
             log.warning("bin_reconcile_bin_fail %s: %s", bin_path, e)
 
+    n_deleted = len(deleted_metas) + len(deleted_bins)
+    if n_deleted:
+        promstats.evictions_total.labels(reason="reconcile").inc(n_deleted)
     log.info(
         "bin_reconcile deleted_metas=%d deleted_bins=%d",
         len(deleted_metas),
