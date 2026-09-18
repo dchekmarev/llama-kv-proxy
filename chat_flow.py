@@ -1052,6 +1052,11 @@ async def chat_flow(
 
     messages: list[dict] = data.get("messages") or []
     stream = bool(data.get("stream", False))
+    # A client opts a request out of the KV cache by sending cache_prompt:false
+    # in the body. Such a request is proxied onto a free/oldest slot untouched:
+    # no restore search, no pre-chat erase, and no save of bin/meta. Absent or
+    # true keeps the normal big/small cache behavior.
+    no_cache = data.get("cache_prompt") is False
 
     # Request group id: the correlation id (X-Request-ID or generated) plus a
     # millisecond timestamp; every file of this request shares the prefix.
@@ -1097,6 +1102,9 @@ async def chat_flow(
         messages, effective_model, WORDS_PER_BLOCK, REASONING_IN_KEY, render_ctx
     )
     is_big = n_words > BIG_THRESHOLD_WORDS
+    # A no-cache request skips all cache treatment (restore + save) and the
+    # pre-chat erase: it is proxied onto a free/oldest slot untouched.
+    do_cache = is_big and not no_cache
 
     def _req_outcome(outcome: str) -> None:
         promstats.requests_total.labels(
@@ -1109,6 +1117,7 @@ async def chat_flow(
     # reader). Skipped (no emit) when neither a handler path completes.
     decision: dict = {
         "is_big": is_big,
+        "no_cache": no_cache,
         "n_words": n_words,
         "words_threshold": BIG_THRESHOLD_WORDS,
         "model": effective_model,
@@ -1131,7 +1140,7 @@ async def chat_flow(
     # big requests restore or save, so the candidate search is lazy.
     restore_key: str | None = None
     restore_ratio: float | None = None
-    if is_big:
+    if do_cache:
         cand = await _find_restore_candidate(prefix_hashes, blocks, effective_model)
         if cand is None and await _wait_for_inflight_save(prefix_hashes):
             decision["wait_inflight_save"] = True
@@ -1158,6 +1167,8 @@ async def chat_flow(
         else:
             hs.record_miss(effective_model)
             log.info("restore_candidate none")
+    elif no_cache:
+        log.info("no_cache_request n_words=%d (proxied without cache)", n_words)
     else:
         log.info(
             "small_request n_words=%d threshold=%d",
@@ -1174,7 +1185,7 @@ async def chat_flow(
     # Only a big request with a selected candidate can restore, so only it
     # needs a pending entry: a concurrent subsumed deletion of its key must be
     # able to substitute the replacement cache before the slot is acquired.
-    if is_big and restore_key is not None:
+    if do_cache and restore_key is not None:
         _register_pending_restore(restore_key)
     # Refresh the model's slot pools before picking a slot: a slot cut/reload on
     # the backend is otherwise only seen at the next periodic poll, and a stale
@@ -1187,8 +1198,8 @@ async def chat_flow(
             g, _lock, restored, used_key = await asyncio.wait_for(
                 sm.acquire_for_request(
                     effective_model,
-                    restore_key if is_big else None,
-                    resolve_restore_key=_resolve_restore_key if is_big else None,
+                    restore_key if do_cache else None,
+                    resolve_restore_key=_resolve_restore_key if do_cache else None,
                 ),
                 timeout=ACQUIRE_TIMEOUT,
             )
@@ -1207,7 +1218,7 @@ async def chat_flow(
                 status_code=503,
             )
     finally:
-        if is_big and restore_key:
+        if do_cache and restore_key:
             _unregister_pending_restore(restore_key)
     promstats.slot_wait_seconds.labels(model=effective_model).observe(
         time.monotonic() - t_acq
@@ -1251,22 +1262,23 @@ async def chat_flow(
     # with no restore hit, or a failed/missing restore) the slot may still hold
     # a stale or oversized prompt from a previous conversation; starting a chat
     # on top of it can wedge llama.cpp in PROCESSING_PROMPT (the slot never
-    # finishes and the server busy-loops). Clear the slot first.
-    erase_done = restored is not True and ERASE_BEFORE_CHAT
+    # finishes and the server busy-loops). Clear the slot first. A no-cache
+    # request is proxied onto the slot untouched, so it never erases.
+    erase_done = (not no_cache) and restored is not True and ERASE_BEFORE_CHAT
     decision["erase_done"] = erase_done
     if erase_done:
         await client.erase_slot(slot_id, model=effective_model)
 
     body = dict(data)
     body["model"] = effective_model
-    body["cache_prompt"] = bool(is_big)
+    body["cache_prompt"] = bool(do_cache)
     body["n_keep"] = -1
 
     opts = dict(body.get("options") or {})
     opts["slot_id"] = slot_id
     opts["id_slot"] = slot_id
     opts["n_keep"] = -1
-    opts["cache_prompt"] = bool(is_big)
+    opts["cache_prompt"] = bool(do_cache)
     body["options"] = opts
 
     log.info(
@@ -1311,7 +1323,7 @@ async def chat_flow(
                 blocks,
                 effective_model,
                 sm,
-                is_big,
+                do_cache,
                 prefix_hashes,
                 clients,
                 messages,
@@ -1370,7 +1382,7 @@ async def chat_flow(
                 _assistant_content(out)
             )
             reqlog.log_file("response", rid, ts, out)
-            if is_big:
+            if do_cache:
                 # Save + meta + subsumed-meta cleanup (see the stream reader)
                 # runs in the background: the .bin write must not delay the
                 # JSON response. The task owns the slot and releases it, and
