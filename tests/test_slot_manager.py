@@ -193,6 +193,65 @@ async def test_waiters_repick_on_release_no_pileup(sm):
     assert not sm._waiters.get("model1"), "no waiter may remain registered"
 
 
+@pytest.mark.asyncio
+async def test_waiter_wakeup_is_fifo(sm):
+    """One slot, several waiters: each release must serve the
+    longest-waiting request first (FIFO), not an arbitrary waiter. A set
+    here gave arbitrary order and starved the oldest request behind newer
+    ones until ACQUIRE_TIMEOUT."""
+    sm.set_backend_slots(0, "model1", [{"id": 0}])  # single slot
+    holder, _, _, _ = await sm.acquire_for_request("model1")
+
+    w1 = asyncio.create_task(sm.acquire_for_request("model1"))
+    w2 = asyncio.create_task(sm.acquire_for_request("model1"))
+    w3 = asyncio.create_task(sm.acquire_for_request("model1"))
+    for _ in range(10):
+        await asyncio.sleep(0.01)  # let all waiters park, in creation order
+    assert len(sm._waiters["model1"]) == 3, "all 3 must be waiting"
+
+    sm.release(holder)
+    done, _ = await asyncio.wait(
+        [w1, w2, w3], timeout=2.0, return_when=asyncio.FIRST_COMPLETED
+    )
+    assert done == {w1}, "the oldest waiter must be served first"
+
+    sm.release(w1.result()[0])
+    done, _ = await asyncio.wait(
+        [w2, w3], timeout=2.0, return_when=asyncio.FIRST_COMPLETED
+    )
+    assert done == {w2}, "then the next-oldest, not the newest"
+
+    sm.release(w2.result()[0])
+    done, _ = await asyncio.wait([w3], timeout=2.0)
+    assert done == {w3}
+    sm.release(w3.result()[0])
+    assert not sm._waiters.get("model1"), "no waiter may remain registered"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_waiter_does_not_block_fifo(sm):
+    """A waiter cancelled while sleeping (ACQUIRE_TIMEOUT) must unregister
+    itself; the next release wakes the next live waiter, not the corpse."""
+    sm.set_backend_slots(0, "model1", [{"id": 0}])  # single slot
+    holder, _, _, _ = await sm.acquire_for_request("model1")
+
+    w1 = asyncio.create_task(sm.acquire_for_request("model1"))
+    w2 = asyncio.create_task(sm.acquire_for_request("model1"))
+    for _ in range(10):
+        await asyncio.sleep(0.01)
+    assert len(sm._waiters["model1"]) == 2
+
+    w1.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await w1
+    assert len(sm._waiters["model1"]) == 1, "cancelled waiter must unregister"
+
+    sm.release(holder)
+    done, _ = await asyncio.wait([w2], timeout=2.0)
+    assert done == {w2}, "the live waiter must be woken past the cancelled one"
+    sm.release(w2.result()[0])
+
+
 def test_oldest_slot_selected_by_usage(sm):
     """With no free slots, the least recently used one is selected."""
     sm._last_used[(0, "model1", 0)] = 1000.0
