@@ -97,6 +97,23 @@ async def test_save_slot_without_model_omits_model():
 
 
 @pytest.mark.asyncio
+async def test_save_slot_500_is_false():
+    """A 500 (slot not ready / nothing to save) is a normal outcome: False."""
+    c = make_client()
+    c.client.post = AsyncMock(return_value=resp(500, {}))
+    assert await c.save_slot(0, "abc") is False
+
+
+@pytest.mark.asyncio
+async def test_save_slot_other_error_is_false_not_raise():
+    """Any other non-2xx is a failed save: False, never raised (mirrors
+    restore_slot), so callers can rely on a plain bool."""
+    c = make_client()
+    c.client.post = AsyncMock(return_value=resp(502, {}))
+    assert await c.save_slot(0, "abc") is False
+
+
+@pytest.mark.asyncio
 async def test_restore_slot_with_model_in_body():
     """A router routes the restore by the model in the BODY, not the query."""
     c = make_client()

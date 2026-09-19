@@ -16,6 +16,7 @@ import ui as ui_obs
 from request_id import request_id_var
 from ui import Registry, format_prompt, format_prompt_tail
 
+
 # --- format_prompt -----------------------------------------------------------
 
 

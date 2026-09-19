@@ -1,6 +1,6 @@
 # tests/test_models_endpoint.py
 
-"""/v1/models must proxy the backend model list, with a static MODEL_ID fallback."""
+"""/v1/models must proxy the union of the backends' model lists, with a static MODEL_ID fallback."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -69,6 +69,49 @@ async def test_models_endpoint_fallback_when_backend_down(monkeypatch):
     mock = MagicMock()
     mock.get_models = AsyncMock(return_value=None)
     app_module.app.state.clients = [mock]
+
+    resp = await app_module.models()
+
+    assert resp == {"data": [{"id": "llama.cpp"}]}
+
+
+async def test_models_endpoint_unions_all_backends():
+    """All backends are queried; the union is deduped by id, first-seen order."""
+    c1 = MagicMock()
+    c1.get_models = AsyncMock(return_value=[{"id": "m1"}, {"id": "m2"}])
+    c2 = MagicMock()
+    c2.get_models = AsyncMock(return_value=[{"id": "m2"}, {"id": "m3"}])
+    app_module.app.state.clients = [c1, c2]
+
+    resp = await app_module.models()
+
+    assert resp == {"data": [{"id": "m1"}, {"id": "m2"}, {"id": "m3"}]}
+    assert c1.get_models.await_count == 1
+    assert c2.get_models.await_count == 1
+
+
+async def test_models_endpoint_partial_outage_returns_live_backends():
+    """One backend down -> the live backends' models are still advertised."""
+    c1 = MagicMock()
+    c1.get_models = AsyncMock(return_value=None)
+    c2 = MagicMock()
+    c2.get_models = AsyncMock(return_value=[{"id": "m9"}])
+    app_module.app.state.clients = [c1, c2]
+
+    resp = await app_module.models()
+
+    assert resp == {"data": [{"id": "m9"}]}
+
+
+async def test_models_endpoint_fallback_when_all_backends_down(monkeypatch):
+    """Every backend down -> the configured MODEL_ID is advertised."""
+    monkeypatch.setattr(app_module, "MODEL_ID", "llama.cpp")
+    clients = []
+    for i in range(2):
+        c = MagicMock()
+        c.get_models = AsyncMock(return_value=None)
+        clients.append(c)
+    app_module.app.state.clients = clients
 
     resp = await app_module.models()
 

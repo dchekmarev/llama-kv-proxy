@@ -163,9 +163,10 @@ EVICT_INTERVAL_S = _env_float("EVICT_INTERVAL_S", 3600)
 # In-memory restore index (the "B+A" design): an in-RAM hash->key index built
 # from the metas' per-message prefix hashes, so a restore search is an O(n) set
 # lookup (walk the request's prefix hashes from the longest, take the first
-# known meta) instead of scanning and JSON-parsing every meta file. Off by
-# default (no behavior change); the on-disk two-tier scan stays the fallback.
-META_INDEX_ENABLED = _env_bool("META_INDEX_ENABLED", False)
+# known meta) instead of scanning and JSON-parsing every meta file. On by
+# default; the on-disk two-tier scan stays the fallback (index miss, empty
+# index, or old blocks-only metas that are not indexed).
+META_INDEX_ENABLED = _env_bool("META_INDEX_ENABLED", True)
 # Interval (seconds) between index<->disk reconciliations: drops ghost entries
 # left by external meta deletions (bin_cache reconcile/clean remove files
 # without notifying the index). 0 disables the periodic reconcile.
@@ -254,6 +255,20 @@ if REQUEST_LOG_DIR:
 # Max number of request groups kept in the directory; oldest groups (all their
 # files) are deleted first. 0 disables rotation (keep everything).
 REQUEST_LOG_MAX_GROUPS = _env_int("REQUEST_LOG_MAX_GROUPS", 100)
+
+# Live observability dashboard served by the proxy itself under /proxy/ui/
+# (same port): in-flight requests with their prompt preview, the live token
+# stream per request (SSE), slot states, and recent history. In-memory only.
+UI_ENABLED = _env_bool("UI_ENABLED", True)
+# Number of finished requests kept in the in-memory history.
+UI_HISTORY_MAX = _env_int("UI_HISTORY_MAX", 200)
+# Max chars of the generated response kept per request as the live tail.
+UI_TAIL_MAX_CHARS = _env_int("UI_TAIL_MAX_CHARS", 16384)
+# Max chars of the prompt transcript shown in the request list.
+UI_PREVIEW_MAX_CHARS = _env_int("UI_PREVIEW_MAX_CHARS", 2048)
+# Max chars of the full prompt transcript kept while a request is in flight
+# (fetched on demand by the dashboard; dropped when the request ends).
+UI_PROMPT_FULL_MAX_CHARS = _env_int("UI_PROMPT_FULL_MAX_CHARS", 1048576)
 
 # Service port
 PORT = _env_int("PORT", 8081)

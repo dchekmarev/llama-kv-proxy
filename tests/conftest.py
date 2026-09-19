@@ -15,6 +15,7 @@ import pytest
 import hashing as hs
 import promstats
 import slot_manager as sm_module
+import ui as ui_obs
 from slot_manager import SlotManager
 
 
@@ -24,6 +25,44 @@ def _clean_prom_registry():
     promstats.reset()
     yield
     promstats.reset()
+
+
+@pytest.fixture(autouse=True)
+def _clean_meta_index():
+    """Reset the shared restore index between tests.
+
+    The index flag is on by default, so metas written during a test (via
+    write_meta_async) land in the module-level singleton; without this reset
+    they would leak into the next test's search (whose META_DIR is a different
+    temp dir).
+    """
+    hs._index.clear()
+    yield
+    hs._index.clear()
+
+
+@pytest.fixture(autouse=True)
+def _clean_ui_registry():
+    """Reset the live-dashboard registry between tests.
+
+    Every chat_flow run registers its request in the module-level registry;
+    without this reset requests would leak across tests. A broadcaster task
+    left over from a previous test's event loop is cancelled as well.
+    """
+    reg = ui_obs.registry
+    reg.active.clear()
+    reg.history.clear()
+    task = reg._broadcaster
+    if task is not None:
+        task.cancel()
+        reg._broadcaster = None
+    yield
+    reg.active.clear()
+    reg.history.clear()
+    task = reg._broadcaster
+    if task is not None:
+        task.cancel()
+        reg._broadcaster = None
 
 
 @pytest.fixture()

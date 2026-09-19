@@ -21,6 +21,7 @@ llama.cpp provides "slots," each holding a conversation's KV cache, so repeated 
 - Automatic cache hygiene: TTL/count/size eviction, superseded-cache cleanup, `.bin` LRU size cap, meta/.bin reconciliation
 - Multi-backend and router (`--models-preset`) support with per-model slot pools
 - Prometheus `/metrics`: proxy-level `llama_kv_proxy_*` metrics plus backend `/metrics` aggregated across all backends and models with `model`/`backend` labels
+- Live dashboard at `/proxy/ui/`: in-flight requests with streaming token tails (reasoning in a separate color), recent history, and per-slot state with the busy request mapped in
 - Docker Compose packaging with a healthcheck
 
 ## How it works
@@ -40,6 +41,8 @@ For a big request the proxy computes per-message prefix hashes (`sha256(model_id
 2. **Tier 2** — block-based LCP fallback (also matches old metas that only have blocks). Ranked by the fraction of the request covered; ties are broken by the smallest size.
 
 A candidate must cover at least `LCP_TH` of the request. Both tiers filter by `model_id` and `WORDS_PER_BLOCK`.
+
+By default the search first consults an in-memory index of the metas' prefix hashes (`META_INDEX_ENABLED`): a tier-1 hit is an O(n) set lookup instead of a disk scan, validated against the on-disk meta on hit. A miss (or an empty index, or old blocks-only metas that are not indexed) falls back to the two-tier on-disk scan, so results never lose a candidate the legacy path would find.
 
 ### Slot selection
 
@@ -166,6 +169,8 @@ All parameters are environment variables; defaults in parentheses.
 | `META_MAX_FILES` | `1000` | Eviction cap on meta file count. |
 | `META_MAX_MB` | `512` | Eviction cap on total meta size, MB. |
 | `EVICT_INTERVAL_S` | `3600` | Interval between eviction runs, seconds. |
+| `META_INDEX_ENABLED` | `1` | `0` disables the in-memory restore index (every search falls back to the on-disk two-tier scan). |
+| `META_INDEX_RECONCILE_INTERVAL_S` | `300` | Interval between index<->disk reconciliations (drops ghost entries from external meta deletions); `0` disables. |
 | `BIN_CACHE_DIR` | *(empty)* | Backend `.bin` cache directory (the mounted `--slot-save-path`); empty disables direct `.bin` cleanup. |
 | `BIN_CACHE_MAX_MB` | `0` | Max total `.bin` size, MB; `0` disables the size cap. |
 | `BIN_CACHE_INTERVAL_S` | `EVICT_INTERVAL_S` | Interval between `.bin` LRU cleanup runs, seconds. |
@@ -173,6 +178,11 @@ All parameters are environment variables; defaults in parentheses.
 | `BIN_SAVE_GRACE_S` | `10` | Grace window: a `.bin` without a meta modified within this window is treated as an in-flight save and skipped. `0` disables the guard. |
 | `ERASE_BEFORE_SMALL` | `0` | `1` clears a slot's in-memory KV (`action=erase`) before dispatching a small request, so it does not start on top of another conversation's stale KV. Off by default until verified against the target build. |
 | `REASONING_IN_KEY` | `0` | `1` includes `reasoning_content`/`reasoning` in the per-message cache-key parts and in the saved assistant response, so distinct reasoning traces get distinct cache keys. Only matters when the backend chat template renders reasoning into the prompt. Off by default (keys byte-identical to the legacy behavior). |
+| `UI_ENABLED` | `1` | `0` disables the `/proxy/ui/` dashboard (routes return 404, hooks become no-ops). |
+| `UI_HISTORY_MAX` | `200` | Number of finished requests kept in the dashboard history. |
+| `UI_TAIL_MAX_CHARS` | `16384` | Max characters of the live token tail kept per request. |
+| `UI_PREVIEW_MAX_CHARS` | `2048` | Budget for the prompt preview shown in the tables: the newest whole messages that fit (the conversation tail, not the head). |
+| `UI_PROMPT_FULL_MAX_CHARS` | `1048576` | Cap for the full prompt transcript served on demand; kept until the request leaves the history. |
 | `PORT` | `8081` | Proxy port. |
 | `LOG_LEVEL` | `INFO` | Log level. |
 
@@ -183,10 +193,14 @@ All parameters are environment variables; defaults in parentheses.
 | Method | Path | Description |
 |---|---|---|
 | POST | `/v1/chat/completions` | OpenAI-compatible chat endpoint (stream and non-stream). |
-| GET | `/v1/models` | Backend model list (proxied from the first backend); falls back to `MODEL_ID` when the backend is unavailable. |
+| GET | `/v1/models` | Union of the backends' model lists (deduped by id); falls back to `MODEL_ID` when no backend reports any model. |
 | GET | `/version` | Proxy name and version (single source of truth: `version.py`). |
 | GET | `/proxy/slots` | Aggregated slot state across all backends (state, n_ctx, total_tokens, LRU mark). |
 | GET | `/proxy/health` | Backend availability probe plus slot state. |
+| GET | `/proxy/ui/` | Live dashboard (self-contained HTML page): active requests with live token tails, recent history, slot grid. |
+| GET | `/proxy/ui/state` | JSON snapshot: active requests (with token tails), history, slots with `busy_rid`. |
+| GET | `/proxy/ui/request/{rid}` | Full prompt transcript of an in-flight or recent (history) request. |
+| GET | `/proxy/ui/events` | SSE stream for the dashboard: initial snapshot, then token batches and start/slot/end events (15 s heartbeat). |
 | GET | `/cache/stats` | Cache file count, total size, hit/miss counters. |
 | POST | `/cache/clear` | Delete all local meta files (and best-effort purge backend `.bin` files). |
 | GET | `/metrics` | Prometheus target: proxy `llama_kv_proxy_*` metrics followed by the merged backend `/metrics` across all active (loaded) models, each backend metric carrying `model` and `backend` labels. `?model=XA down backend/model is skipped, never failing the scrape. |

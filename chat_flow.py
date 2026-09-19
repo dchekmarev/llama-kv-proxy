@@ -49,6 +49,7 @@ import bin_cache
 import hashing as hs
 import promstats
 import reqlog
+import ui as ui_obs
 from config import (
     ACQUIRE_TIMEOUT,
     BIG_THRESHOLD_WORDS,
@@ -314,16 +315,20 @@ def _assistant_content(out: dict) -> tuple[str, str, str]:
 
 
 def _append_stream_content(
-    line: str, parts: list[str], reasoning_parts: list[str] | None = None
+    line: str,
+    parts: list[str],
+    reasoning_parts: list[str] | None = None,
+    ui_reason_parts: list[str] | None = None,
 ) -> str | None:
     """Append assistant text from one SSE line (delta first, message fallback).
 
     When reasoning_parts is given (REASONING_IN_KEY on), the line's reasoning
     (delta first, message fallback; reasoning_content, else reasoning — same
     priority as the non-stream path) is appended there too, so the save site
-    has the response's reasoning trace. Returns the reasoning field name the
-    line used ("reasoning_content" or "reasoning"), or None when the line
-    carried no reasoning.
+    has the response's reasoning trace. ui_reason_parts is the dashboard's
+    always-on reasoning sink (independent of REASONING_IN_KEY). Returns the
+    reasoning field name the line used ("reasoning_content" or "reasoning"),
+    or None when the line carried no reasoning.
     """
     line = line.strip()
     if not line.startswith("data:"):
@@ -355,8 +360,11 @@ def _append_stream_content(
                 reasoning, field = _reasoning_of(message)
     if isinstance(content, str) and content:
         parts.append(content)
-    if reasoning_parts is not None and isinstance(reasoning, str) and reasoning:
-        reasoning_parts.append(reasoning)
+    if isinstance(reasoning, str) and reasoning:
+        if reasoning_parts is not None:
+            reasoning_parts.append(reasoning)
+        if ui_reason_parts is not None:
+            ui_reason_parts.append(reasoning)
         return field
     return None
 
@@ -785,6 +793,9 @@ async def start_stream_task(
         # reasoning): the saved assistant message must carry the trace under
         # the same name the client received and echoes back.
         reasoning_field = "reasoning_content"
+        # Always-on reasoning sink for the live dashboard (independent of
+        # REASONING_IN_KEY, which gates the save path).
+        ui_reason_parts: list[str] = []
         # usage/timings from the final SSE chunk (llama.cpp, prompt caching on):
         # the ground-truth for "was the whole prompt reprocessed" — cached_tokens
         # must match the restored prefix. None until/unless the backend sent it.
@@ -797,12 +808,35 @@ async def start_stream_task(
         # set in the CancelledError handler, read in the finally to pick the
         # request outcome.
         externally_cancelled = False
+        # Dashboard feed: parse the line once and forward the new content /
+        # reasoning deltas to the live UI (no-op when the UI is off).
+        ui_content_n = 0
+        ui_reason_n = 0
+
+        def _feed(line: str) -> str | None:
+            nonlocal ui_content_n, ui_reason_n
+            field = _append_stream_content(
+                line, response_parts, reasoning_parts, ui_reason_parts
+            )
+            content = (
+                response_parts[-1] if len(response_parts) > ui_content_n else ""
+            )
+            reason = (
+                ui_reason_parts[-1] if len(ui_reason_parts) > ui_reason_n else ""
+            )
+            if content or reason:
+                ui_obs.req_tokens(rid, content, reason)
+            ui_content_n = len(response_parts)
+            ui_reason_n = len(ui_reason_parts)
+            return field
+
         try:
             async for chunk in resp.aiter_raw():
                 if not chunk:
                     continue
                 if ttft is None and t0 is not None:
                     ttft = time.monotonic() - t0
+                    ui_obs.req_ttft(rid, ttft)
                 try:
                     await asyncio.wait_for(queue.put(chunk), timeout=STREAM_PUT_TIMEOUT)
                 except asyncio.TimeoutError:
@@ -820,9 +854,7 @@ async def start_stream_task(
                 while "\n" in sse_buffer:
                     line, sse_buffer = sse_buffer.split("\n", 1)
                     raw_parts.append(line + "\n")
-                    field = _append_stream_content(
-                        line, response_parts, reasoning_parts
-                    )
+                    field = _feed(line)
                     if field:
                         reasoning_field = field
                     u = _stream_usage_of(line)
@@ -831,15 +863,15 @@ async def start_stream_task(
             sse_buffer += decoder.decode(b"", True)
             if sse_buffer:
                 raw_parts.append(sse_buffer)
-                field = _append_stream_content(
-                    sse_buffer, response_parts, reasoning_parts
-                )
+                field = _feed(sse_buffer)
                 if field:
                     reasoning_field = field
                 u = _stream_usage_of(sse_buffer)
                 if u is not None:
                     stream_usage, stream_timings = u
             completed = not push_failed
+            if stream_usage is not None:
+                ui_obs.req_usage(rid, stream_usage)
         except asyncio.CancelledError:
             # Distinguish the two cancellation sources: a client disconnect
             # cancels this task from outside (gen's finally), so the task's
@@ -1012,6 +1044,20 @@ async def start_stream_task(
                 if not handed_off:
                     log.info("slot_release g=%s key=%s via=stream", g, key[:16])
                     sm.release(g)
+            # The client has received everything (or the stream failed): the
+            # request is over from the dashboard's point of view, even when a
+            # big-completed stream hands the slot to a background save.
+            ui_obs.req_end(
+                rid,
+                status=(
+                    ui_obs.STATUS_ERROR
+                    if error_reason
+                    else ui_obs.STATUS_CANCELLED
+                    if externally_cancelled
+                    else ui_obs.STATUS_DONE
+                ),
+                error=error_reason,
+            )
             # Sentinel with bounded wait: if there is no consumer, do not
             # block (the slot is already released).
             try:
@@ -1105,6 +1151,17 @@ async def chat_flow(
     # A no-cache request skips all cache treatment (restore + save) and the
     # pre-chat erase: it is proxied onto a free/oldest slot untouched.
     do_cache = is_big and not no_cache
+
+    # Live dashboard: register the request (no-op when the UI is off).
+    ui_obs.req_start(
+        rid,
+        model=effective_model,
+        stream=stream,
+        n_words=n_words,
+        is_big=is_big,
+        key=key,
+        messages=messages,
+    )
 
     def _req_outcome(outcome: str) -> None:
         promstats.requests_total.labels(
@@ -1213,6 +1270,7 @@ async def chat_flow(
                 model=effective_model, stream="true" if stream else "false",
                 outcome="acquire_timeout",
             ).inc()
+            ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error="acquire_timeout")
             return JSONResponse(
                 {"error": "all slots busy, please retry later"},
                 status_code=503,
@@ -1231,6 +1289,7 @@ async def chat_flow(
     decision["restore"]["used_key"] = used_key
     decision["restore"]["outcome"] = restored
     decision["slot"] = {"backend": be_id, "model": effective_model, "id": slot_id}
+    ui_obs.req_slot(rid, be_id, effective_model, slot_id)
     decision["slot_before_chat"] = await _snapshot_slot(client, slot_id, effective_model)
 
     # A restore is only attempted when a key was selected, so both branches
@@ -1310,6 +1369,11 @@ async def chat_flow(
                 promstats.requests_total.labels(
                     model=effective_model, stream="true", outcome="error"
                 ).inc()
+                ui_obs.req_end(
+                    rid,
+                    status=ui_obs.STATUS_ERROR,
+                    error=f"backend {resp.status_code}",
+                )
                 return JSONResponse(
                     {"error": err_txt.decode("utf-8", "ignore")},
                     status_code=_provider_error_status(resp.status_code),
@@ -1353,6 +1417,8 @@ async def chat_flow(
             )
             if not isinstance(out, dict):
                 _req_outcome("error")
+                ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR,
+                              error="provider non-JSON body")
                 return JSONResponse(
                     {"error": "provider non-JSON body"},
                     status_code=502,
@@ -1371,6 +1437,8 @@ async def chat_flow(
                 if out.get("raw"):
                     body["raw"] = out["raw"]
                 _req_outcome("error")
+                ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR,
+                              error=str(out.get("message") or "provider error"))
                 return JSONResponse(
                     body,
                     status_code=_provider_error_status(out.get("status")),
@@ -1382,6 +1450,12 @@ async def chat_flow(
                 _assistant_content(out)
             )
             reqlog.log_file("response", rid, ts, out)
+            # Non-stream: the whole answer arrived at once — feed it to the
+            # dashboard in a single batch (no incremental visibility exists).
+            ui_obs.req_tokens(rid, response_text, response_reasoning)
+            if isinstance(out.get("usage"), dict):
+                ui_obs.req_usage(rid, out["usage"])
+            ui_obs.req_ttft(rid, time.monotonic() - t0_mono)
             if do_cache:
                 # Save + meta + subsumed-meta cleanup (see the stream reader)
                 # runs in the background: the .bin write must not delay the
@@ -1452,6 +1526,7 @@ async def chat_flow(
                 is_big,
                 int((time.time() - t0) * 1000),
             )
+            ui_obs.req_end(rid)
             return JSONResponse(content=out, status_code=200)
 
     except httpx.HTTPError as e:
@@ -1459,10 +1534,12 @@ async def chat_flow(
         # genuine upstream failure (502), not a proxy bug (500).
         log.exception("chat_upstream_error g=%s key=%s", g, key[:16])
         _req_outcome("error")
+        ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error=str(e))
         return JSONResponse({"error": str(e)}, status_code=502)
     except Exception as e:
         log.exception("chat_error g=%s key=%s", g, key[:16])
         _req_outcome("error")
+        ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error=str(e))
         return JSONResponse({"error": str(e)}, status_code=500)
     finally:
         if not task_owns_slot:

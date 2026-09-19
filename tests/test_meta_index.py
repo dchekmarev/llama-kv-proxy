@@ -25,7 +25,7 @@ def _touch(meta_dir, key):
 
 @pytest.fixture
 def fresh_index(monkeypatch):
-    """A clean index and tier counters (flag left at its default, off)."""
+    """A clean index and tier counters (flag left at its default, on)."""
     monkeypatch.setattr(hs, "_index", meta_index.MetaIndex())
     promstats.reset()
     yield hs._index
@@ -302,7 +302,8 @@ async def test_rebuild_index_async_counts(meta_dir, index_on):
 # ---- integration: flag off = legacy path ------------------------------------
 
 @pytest.mark.asyncio
-async def test_flag_off_uses_disk_and_index_untouched(meta_dir, fresh_index):
+async def test_flag_off_uses_disk_and_index_untouched(meta_dir, fresh_index, monkeypatch):
+    monkeypatch.setattr(hs, "META_INDEX_ENABLED", False)
     await hs.write_meta_async("h_a2", "p", [], 100, "m1", prefix_hashes=["h_a1", "h_a2"])
     # Flag off: the write must not touch the index.
     assert fresh_index.is_empty()
@@ -392,6 +393,7 @@ async def test_lifespan_starts_reconcile_task_when_enabled(meta_dir, index_on, m
 async def test_lifespan_no_index_when_disabled(meta_dir, fresh_index, monkeypatch):
     hs.write_meta("h_a2", "p", [], 100, "m1", prefix_hashes=["h_a1", "h_a2"])
     _mock_lifespan_deps(monkeypatch)
+    monkeypatch.setattr(app_module, "META_INDEX_ENABLED", False)
 
     async with app_module.lifespan(app_module.app):
         assert fresh_index.is_empty(), "flag off must not build the index"
