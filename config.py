@@ -211,6 +211,15 @@ ERASE_BEFORE_SMALL = _env_bool("ERASE_BEFORE_SMALL", False)
 # over latency): a big request with no restore hit reprocesses its prompt.
 ERASE_BEFORE_CHAT = _env_bool("ERASE_BEFORE_CHAT", True)
 
+# Skip a pre-chat restore when the picked slot already holds the target key's
+# KV: it is the slot that just saved that key (a save does not clear the
+# slot), or the key was restored there and the slot was not used since. The
+# restore would only re-read the .bin and rebuild identical KV. A stale record
+# (e.g. a backend restart with the same slot ids) costs at most one full
+# re-prefill: the restore is a speed optimization, so a wrong skip never
+# changes the output.
+SKIP_RESTORE_SAME_SLOT = _env_bool("SKIP_RESTORE_SAME_SLOT", True)
+
 # Watchdog: if a backend slot reports is_processing for longer than this many
 # seconds, it is presumed wedged (stuck in prompt processing) and is erased to
 # recover the backend without a restart. 0 disables the watchdog.

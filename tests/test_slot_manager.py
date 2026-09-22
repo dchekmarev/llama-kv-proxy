@@ -20,6 +20,7 @@ import pytest
 
 import slot_manager as sm_module
 from llama_client import RESTORE_ERROR
+from promstats import counter_sum, restore_skipped_same_slot_total
 from slot_manager import SlotManager
 
 
@@ -361,3 +362,173 @@ async def test_release_drops_bookkeeping_for_cut_slot(sm):
 
     assert g not in sm._locks, "cut slot lock must be dropped on release"
     assert g not in sm._last_used, "cut slot LRU mark must be dropped on release"
+
+
+# --- Skip a restore into the slot that already holds the target key ---
+#
+# A save does not clear the slot: after saving key K from slot S, S still
+# holds K's KV. When the next request re-picks S with restore candidate K,
+# the restore would only re-read the .bin and rebuild identical KV — a
+# no-op that must be skipped. The per-slot _last_saved record tracks which
+# key's KV a slot currently holds.
+
+
+@pytest.mark.asyncio
+async def test_save_after_records_held_key(sm):
+    g, _, _, _ = await sm.acquire_for_request("model1")
+    try:
+        await sm.save_after(g, "k1" * 8)
+        assert sm._last_saved[g] == "k1" * 8
+    finally:
+        sm.release(g)
+
+
+@pytest.mark.asyncio
+async def test_failed_save_does_not_record_held_key(sm):
+    g, _, _, _ = await sm.acquire_for_request("model1")
+    try:
+        sm.backends[0]["client"].save_slot = AsyncMock(return_value=False)
+        ok = await sm.save_after(g, "k1" * 8)
+        assert ok is False
+        assert g not in sm._last_saved
+    finally:
+        sm.release(g)
+
+
+@pytest.mark.asyncio
+async def test_restore_skipped_when_slot_already_holds_key(sm):
+    """The continuation after a save re-picks the same slot: the restore of
+    the just-saved key is skipped (no backend call) and counts as a
+    successful restore, so the pre-chat erase is not triggered."""
+    sm.set_backend_slots(0, "model1", [{"id": 0}])  # single slot: LRU re-picks it
+    g, _, _, _ = await sm.acquire_for_request("model1")
+    await sm.save_after(g, "k1" * 8)
+    sm.release(g)
+
+    g2, lock, restored, used_key = await sm.acquire_for_request("model1", "k1" * 8)
+    try:
+        assert g2 == g
+        assert restored is True, "a skipped restore counts as a successful one"
+        assert used_key == "k1" * 8
+        sm.backends[0]["client"].restore_slot.assert_not_awaited()
+        assert g2 not in sm._last_saved, "the record is consumed by the skip"
+        assert counter_sum(restore_skipped_same_slot_total, model="model1") == 1.0
+    finally:
+        sm.release(g2)
+        assert not lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_restore_not_skipped_for_different_key(sm):
+    sm.set_backend_slots(0, "model1", [{"id": 0}])
+    g, _, _, _ = await sm.acquire_for_request("model1")
+    await sm.save_after(g, "k1" * 8)
+    sm.release(g)
+
+    g2, _, restored, _ = await sm.acquire_for_request("model1", "k2" * 8)
+    try:
+        assert restored is True
+        sm.backends[0]["client"].restore_slot.assert_awaited_once_with(
+            g2[2], "k2" * 8, model=g2[1]
+        )
+        assert sm._last_saved[g2] == "k2" * 8, (
+            "a successful restore records the key the slot now holds"
+        )
+    finally:
+        sm.release(g2)
+
+
+@pytest.mark.asyncio
+async def test_restore_not_skipped_on_other_slot(sm):
+    """With 2 slots the picker takes the free one, not the just-saved slot:
+    the restore there is real work."""
+    g, _, _, _ = await sm.acquire_for_request("model1")
+    await sm.save_after(g, "k1" * 8)
+    sm.release(g)
+
+    g2, _, restored, _ = await sm.acquire_for_request("model1", "k1" * 8)
+    try:
+        assert g2 != g, "the free slot must be picked over the just-saved one"
+        assert restored is True
+        sm.backends[0]["client"].restore_slot.assert_awaited_once()
+    finally:
+        sm.release(g2)
+
+
+@pytest.mark.asyncio
+async def test_second_restore_of_same_key_is_skipped(sm):
+    """restore K -> chat -> a duplicate request with the same candidate K:
+    the slot still holds K's KV (appended tokens are truncated by the
+    backend's prefix match), so the second restore is skipped."""
+    sm.set_backend_slots(0, "model1", [{"id": 0}])
+    g, _, restored1, _ = await sm.acquire_for_request("model1", "k1" * 8)
+    assert restored1 is True
+    sm.release(g)
+
+    g2, _, restored2, _ = await sm.acquire_for_request("model1", "k1" * 8)
+    try:
+        assert restored2 is True
+        assert sm.backends[0]["client"].restore_slot.await_count == 1
+    finally:
+        sm.release(g2)
+
+
+@pytest.mark.asyncio
+async def test_failed_restore_keeps_record(sm):
+    """A failed restore of another key leaves the slot's KV untouched, so the
+    old record stays valid for a later matching request."""
+    sm.set_backend_slots(0, "model1", [{"id": 0}])
+    g, _, _, _ = await sm.acquire_for_request("model1")
+    await sm.save_after(g, "k1" * 8)
+    sm.release(g)
+
+    sm.backends[0]["client"].restore_slot = AsyncMock(return_value=False)
+    g2, _, restored, _ = await sm.acquire_for_request("model1", "k2" * 8)
+    try:
+        assert restored is False
+        assert sm._last_saved.get(g2) == "k1" * 8
+    finally:
+        sm.release(g2)
+
+
+@pytest.mark.asyncio
+async def test_acquire_without_restore_clears_record(sm):
+    sm.set_backend_slots(0, "model1", [{"id": 0}])
+    g, _, _, _ = await sm.acquire_for_request("model1")
+    await sm.save_after(g, "k1" * 8)
+    sm.release(g)
+    assert g in sm._last_saved
+
+    g2, _, _, _ = await sm.acquire_for_request("model1")
+    try:
+        assert g2 == g
+        assert g not in sm._last_saved, (
+            "a chat without restore changes the slot's KV and invalidates the record"
+        )
+    finally:
+        sm.release(g2)
+
+
+@pytest.mark.asyncio
+async def test_skip_disabled_by_flag(sm, monkeypatch):
+    monkeypatch.setattr(sm_module, "SKIP_RESTORE_SAME_SLOT", False)
+    sm.set_backend_slots(0, "model1", [{"id": 0}])
+    g, _, _, _ = await sm.acquire_for_request("model1")
+    await sm.save_after(g, "k1" * 8)
+    sm.release(g)
+
+    g2, _, restored, _ = await sm.acquire_for_request("model1", "k1" * 8)
+    try:
+        assert restored is True
+        sm.backends[0]["client"].restore_slot.assert_awaited_once()
+    finally:
+        sm.release(g2)
+
+
+def test_dropped_slot_clears_record(sm):
+    sm.set_backend_slots(0, "model1", [{"id": 0}, {"id": 1}])
+    sm._last_saved[(0, "model1", 1)] = "k" * 16
+
+    sm.set_backend_slots(0, "model1", [{"id": 0}])
+
+    assert (0, "model1", 1) not in sm._last_saved

@@ -75,6 +75,12 @@ restore_ratio = Histogram(
     buckets=RATIO_BUCKETS,
     registry=REGISTRY,
 )
+restore_skipped_same_slot_total = Counter(
+    f"{P}_restore_skipped_same_slot_total",
+    "Restores skipped because the slot already held the target key's KV.",
+    ["model"],
+    registry=REGISTRY,
+)
 slot_wait_seconds = Histogram(
     f"{P}_slot_wait_seconds",
     "Time spent acquiring a backend slot.",
@@ -163,6 +169,7 @@ def reset() -> None:
         requests_total,
         tokens_total,
         restore_total,
+        restore_skipped_same_slot_total,
         saves_total,
         stuck_slot_erases_total,
         evictions_total,
