@@ -113,8 +113,6 @@ curl -N http://localhost:8081/v1/chat/completions \
   -d '{"messages": [{"role": "user", "content": "Hello!"}], "stream": true}'
 ```
 
-If you run into issues using gpt-oss-20b with an IDE like Cline, follow these instructions: https://www.reddit.com/r/CLine/comments/1mtcj2v/making_gptoss_20b_and_cline_work_together/
-
 ## Docker
 
 ```bash
@@ -156,8 +154,8 @@ All parameters are environment variables; defaults in parentheses.
 | `META_DIR` | `kv_meta` | Directory for local `.meta` descriptors, relative to the app directory. |
 | `REQUEST_LOG_DIR` | `kv_reqlog` | Directory for per-request JSON groups (`{timestamp_ms}.{request_id}.{type}.json`: `request`, `response`, `prefix`, `decision`, plus `raw` with the raw SSE for streams), relative to the app directory. Empty disables logging. |
 | `REQUEST_LOG_MAX_GROUPS` | `100` | Max number of request groups kept; oldest groups (all their files) are deleted first. `0` disables rotation. |
-| `REQUEST_TIMEOUT` | `600` | HTTP timeout to the backends, seconds. |
-| `ACQUIRE_TIMEOUT` | `300` | Maximum wait for a free slot, seconds. |
+| `REQUEST_TIMEOUT` | `1500` | HTTP timeout to the backends, seconds. |
+| `ACQUIRE_TIMEOUT` | `1500` | Maximum wait for a free slot, seconds. |
 | `SAVE_WAIT_TIMEOUT` | `30` | Max seconds a big request waits for an in-flight save of a prefix of its own conversation before giving up on the restore (the previous message's meta lands only after its `.bin` write). `0` disables the wait. |
 | `MODEL_ID` | `llama.cpp` | Fallback model id returned by `/v1/models` when the backend is unavailable. |
 | `MODEL_ID_TTL` | `60` | Backend model-id cache TTL, seconds. |
@@ -165,6 +163,7 @@ All parameters are environment variables; defaults in parentheses.
 | `UNKNOWN_MODEL_ID_RETRY` | `5` | Retry interval while the model id is unknown, seconds. |
 | `METRICS_TIMEOUT` | `5` | Timeout for fetching a backend's `/metrics` during a scrape; a slow backend must not stall the whole `/metrics` response. |
 | `SLOT_POLL_INTERVAL_S` | `30` | Interval between backend `GET /slots` polls, seconds. |
+| `SLOT_FRESHEN_INTERVAL_S` | `1.0` | On-demand freshen: before picking a slot, the backends serving the request's model are re-polled at most once per this interval, so a slot cut/reload is observed quickly instead of waiting for the periodic poll. `0` disables. |
 | `META_TTL_H` | `24` | Age after which `.meta` files are evicted, hours. |
 | `META_MAX_FILES` | `1000` | Eviction cap on meta file count. |
 | `META_MAX_MB` | `512` | Eviction cap on total meta size, MB. |
@@ -176,7 +175,11 @@ All parameters are environment variables; defaults in parentheses.
 | `BIN_CACHE_INTERVAL_S` | `EVICT_INTERVAL_S` | Interval between `.bin` LRU cleanup runs, seconds. |
 | `BIN_RECONCILE_INTERVAL_S` | `600` | Interval between meta/.bin reconciliations (both directions); `0` disables. |
 | `BIN_SAVE_GRACE_S` | `10` | Grace window: a `.bin` without a meta modified within this window is treated as an in-flight save and skipped. `0` disables the guard. |
+| `MIN_BIN_SIZE_VALID` | `1` | Minimum size (MB) of a saved `.bin` to count as a real slot save; smaller files are treated as empty captures and discarded without writing a meta. `0` disables the check. |
 | `ERASE_BEFORE_SMALL` | `0` | `1` clears a slot's in-memory KV (`action=erase`) before dispatching a small request, so it does not start on top of another conversation's stale KV. Off by default until verified against the target build. |
+| `ERASE_BEFORE_CHAT` | `1` | `1` erases a slot's in-memory KV before any chat that was not preceded by a successful restore, so it does not start on top of a stale or oversized prompt (which can wedge llama.cpp in `PROCESSING_PROMPT`). On by default. |
+| `SKIP_RESTORE_SAME_SLOT` | `1` | `1` skips a pre-chat restore when the picked slot already holds the target key's KV (it just saved it, or it was restored there and unused since). On by default. |
+| `STUCK_SLOT_THRESHOLD_S` | `1500` | Watchdog: a backend slot reporting `is_processing` for longer than this is presumed wedged and is erased to recover the backend without a restart. `0` disables. |
 | `REASONING_IN_KEY` | `0` | `1` includes `reasoning_content`/`reasoning` in the per-message cache-key parts and in the saved assistant response, so distinct reasoning traces get distinct cache keys. Only matters when the backend chat template renders reasoning into the prompt. Off by default (keys byte-identical to the legacy behavior). |
 | `UI_ENABLED` | `1` | `0` disables the `/proxy/ui/` dashboard (routes return 404, hooks become no-ops). |
 | `UI_HISTORY_MAX` | `200` | Number of finished requests kept in the dashboard history. |
@@ -203,7 +206,7 @@ All parameters are environment variables; defaults in parentheses.
 | GET | `/proxy/ui/events` | SSE stream for the dashboard: initial snapshot, then token batches and start/slot/end events (15 s heartbeat). |
 | GET | `/cache/stats` | Cache file count, total size, hit/miss counters. |
 | POST | `/cache/clear` | Delete all local meta files (and best-effort purge backend `.bin` files). |
-| GET | `/metrics` | Prometheus target: proxy `llama_kv_proxy_*` metrics followed by the merged backend `/metrics` across all active (loaded) models, each backend metric carrying `model` and `backend` labels. `?model=XA down backend/model is skipped, never failing the scrape. |
+| GET | `/metrics` | Prometheus target: proxy `llama_kv_proxy_*` metrics followed by the merged backend `/metrics` across all active (loaded) models, each backend metric carrying `model` and `backend` labels. `?model=X` filters both halves to a single model; a down backend/model is skipped, never failing the scrape. |
 | any | `/{path}` | Forwarded to the first backend as-is (native llama.cpp endpoints: `/slots?model=...`, `/health`, `/tokenize`, …), with the response streamed back. |
 
 ## Metrics
@@ -258,7 +261,7 @@ Label cardinality is bounded by design: `model`, `backend`, `stream`, `outcome`,
 ```bash
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-pip install ruff pytest mypy
+pip install -r requirements-dev.txt mypy
 
 python3 -m pytest tests/ -q   # run the test suite
 ruff check .                  # lint
@@ -268,6 +271,15 @@ python3 -m mypy app.py config.py slot_manager.py llama_client.py \
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same checks (ruff, mypy, pytest) on every push and pull request.
+
+## Security
+
+The proxy has **no authentication**. Anyone who can reach the port can read and send chat requests, wipe the cache (`POST /cache/clear`), consume all slots, read the live dashboard (which serves prompt transcripts of recent requests), and reach every native llama.cpp endpoint through the pass-through.
+
+Run it on a trusted network (single host, private LAN, tailnet) or behind an authenticating reverse proxy. Before exposing the port further:
+
+- set `UI_ENABLED=0` if you do not need the dashboard;
+- set `REQUEST_LOG_DIR=` (empty) to stop writing full request/response bodies to disk — by default they are logged to `kv_reqlog/` (the last `REQUEST_LOG_MAX_GROUPS` groups are kept).
 
 ## Limitations & caveats
 
