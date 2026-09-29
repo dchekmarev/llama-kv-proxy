@@ -300,7 +300,7 @@ def _guard(op: str):
                 return
             try:
                 fn(*args, **kwargs)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 log.warning("ui_hook_failed op=%s", op, exc_info=True)
 
         return inner

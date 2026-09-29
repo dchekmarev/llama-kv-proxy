@@ -576,8 +576,10 @@ async def _save_and_write_meta(
             )
             try:
                 bin_cache.delete_bin_file(BIN_CACHE_DIR, key)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception:
+                log.warning(
+                    "save_empty_capture g=%s key=%s bin_delete_failed", g, key[:16], exc_info=True
+                )
             promstats.saves_total.labels(model=model_id, outcome="empty_capture").inc()
             _set_save_outcome(decision, success=False, phase="empty_capture", bin_size_bytes=bin_size)
             return False

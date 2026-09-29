@@ -179,14 +179,14 @@ def reset() -> None:
         backend_scrape_failures_total,
     ):
         m.clear()
-    for m in (
+    for h in (
         request_duration_seconds,
         ttft_seconds,
         restore_ratio,
         slot_wait_seconds,
         save_duration_seconds,
     ):
-        m.clear()
+        h.clear()
     for g in (meta_files, meta_bytes, bin_bytes, slots_total, backend_up):
         g.clear()
 
