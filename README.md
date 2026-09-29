@@ -296,6 +296,18 @@ Run it on a trusted network (single host, private LAN, tailnet) or behind an aut
 
 This project was inspired by and initially built upon concepts from [airnsk/proxycache](https://github.com/airnsk/proxycache).
 
+## Provenance
+
+The first commit in this repository's history is an import of `airnsk/proxycache` (see `Initial import from airnsk/proxycache`). Most of the proxy, slot-manager and hashing code originated there, and subsequent commits build on that structure.
+
+**The upstream project ships no license.** There is no `LICENSE` file and no license declaration in its README, issues or repository metadata. Under the Berne Convention that means the upstream work is *all rights reserved*: it is not public domain and not covered by any open-source license. Redistribution therefore requires the upstream author's explicit permission, which has not been obtained.
+
+Consequences you should know before redistributing this repository:
+
+- The MIT `LICENSE` below covers the work authored in this repository only. It cannot retroactively license upstream-derived code, and it is not a substitute for the missing grant.
+- Obtaining a license from the upstream author is the only way to make the whole tree cleanly redistributable. Until then, treat the upstream-derived portions as proprietary.
+- Rewriting or paraphrasing source does not create an independent work; it changes the text, not the copyright.
+
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT — see [LICENSE](./LICENSE). This applies to contributions made in this repository and **not** to the upstream-derived code described in [Provenance](#provenance), which remains unlicensed and all rights reserved.
