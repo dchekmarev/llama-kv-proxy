@@ -195,3 +195,58 @@ async def test_fresh_cache_fast_path_no_fetch():
     assert await c.get_model_id_cached() == "m1"
     assert await c.get_model_id_cached() == "m1"
     assert c.client.get.await_count == 1
+
+
+# --- slot pin --------------------------------------------------------------
+# The contract of the slot pin: llama.cpp accepts the target slot in three
+# places at once, and the caller's body must survive untouched.
+
+
+def test_slot_pin_none_returns_body_unchanged():
+    body = {"messages": [], "model": "m1"}
+    out_body, out_query = LlamaClient._with_slot_id(body, None)
+    assert out_query == {}
+    assert out_body == body
+    assert out_body is body, "no pin means no copy"
+
+
+def test_slot_pin_sets_all_three_locations():
+    body = {"messages": [], "model": "m1", "options": {"temperature": 0.4}}
+    out_body, out_query = LlamaClient._with_slot_id(body, 3)
+
+    assert out_body["_slot_id"] == 3
+    assert out_body["slot_id"] == 3
+    assert out_body["id_slot"] == 3
+    assert out_body["options"] == {"temperature": 0.4, "slot_id": 3, "id_slot": 3}
+    assert out_query == {"slot_id": 3, "id_slot": 3}
+
+
+def test_slot_pin_creates_options_when_absent():
+    out_body, _query = LlamaClient._with_slot_id({"messages": []}, 0)
+    assert out_body["options"] == {"slot_id": 0, "id_slot": 0}
+
+
+def test_slot_pin_treats_empty_options_as_absent():
+    out_body, _query = LlamaClient._with_slot_id({"options": {}}, 1)
+    assert out_body["options"] == {"slot_id": 1, "id_slot": 1}
+
+
+def test_slot_pin_treats_null_options_as_absent():
+    out_body, _query = LlamaClient._with_slot_id({"options": None}, 1)
+    assert out_body["options"] == {"slot_id": 1, "id_slot": 1}
+
+
+def test_slot_pin_does_not_mutate_caller_body():
+    body = {"messages": [], "options": {"temperature": 0.4}}
+    LlamaClient._with_slot_id(body, 2)
+    assert body == {"messages": [], "options": {"temperature": 0.4}}
+
+
+def test_slot_pin_overwrites_a_preexisting_pin():
+    body = {"slot_id": 9, "id_slot": 9, "options": {"slot_id": 9}}
+    out_body, out_query = LlamaClient._with_slot_id(body, 5)
+    assert out_body["slot_id"] == 5
+    assert out_body["id_slot"] == 5
+    assert out_body["_slot_id"] == 5
+    assert out_body["options"]["slot_id"] == 5
+    assert out_query["slot_id"] == 5
