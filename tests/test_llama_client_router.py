@@ -188,6 +188,27 @@ async def test_restore_slot_other_error_is_false():
 
 
 @pytest.mark.asyncio
+async def test_restore_slot_posts_to_the_slot_path():
+    """The restore targets POST /slots/{slot_id} with action=restore in the
+    query."""
+    c = make_client()
+    c.client.post = AsyncMock(return_value=resp(200, {}))
+    assert await c.restore_slot(3, "abc") is True
+    assert c.client.post.call_args.args[0] == "/slots/3"
+    assert c.client.post.call_args.kwargs.get("params") == {"action": "restore"}
+
+
+@pytest.mark.asyncio
+async def test_restore_slot_success_is_strictly_200():
+    """Unlike save, only 200 counts as restored: a 2xx that is not 200 is a
+    failure, so the caller keeps the meta instead of dropping it."""
+    for status in (201, 204):
+        c = make_client()
+        c.client.post = AsyncMock(return_value=resp(status, {}))
+        assert await c.restore_slot(0, "abc") is False, f"status {status}"
+
+
+@pytest.mark.asyncio
 async def test_erase_slot_sends_erase_action():
     """erase_slot clears a slot's KV via action=erase, routing by model."""
     c = make_client()
