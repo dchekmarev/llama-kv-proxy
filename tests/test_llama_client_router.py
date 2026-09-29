@@ -128,6 +128,26 @@ async def test_save_slot_other_error_is_false_not_raise():
 
 
 @pytest.mark.asyncio
+async def test_save_slot_posts_to_the_slot_path():
+    """The save targets POST /slots/{slot_id} -- the slot is addressed in the
+    path, the action in the query."""
+    c = make_client()
+    c.client.post = AsyncMock(return_value=resp(200, {}))
+    assert await c.save_slot(3, "abc") is True
+    assert c.client.post.call_args.args[0] == "/slots/3"
+
+
+@pytest.mark.asyncio
+async def test_save_slot_is_true_below_400_only():
+    """Success is decided by the status alone: anything under 400 saved, 400 and
+    above did not. Callers only need the bool, never the status."""
+    for status, expected in ((200, True), (204, True), (302, True), (400, False)):
+        c = make_client()
+        c.client.post = AsyncMock(return_value=resp(status, {}))
+        assert await c.save_slot(0, "abc") is expected, f"status {status}"
+
+
+@pytest.mark.asyncio
 async def test_restore_slot_with_model_in_body():
     """A router routes the restore by the model in the BODY, not the query."""
     c = make_client()
