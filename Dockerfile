@@ -26,7 +26,7 @@ RUN set -eux; \
     chown -R ${UID}:${GID} /app
 USER ${UID}:${GID}
 
-EXPOSE 8080
+EXPOSE 8081
 
 # Probe the port the app actually listens on (PORT env, default 8081).
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=20s \
