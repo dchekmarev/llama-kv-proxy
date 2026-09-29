@@ -8,7 +8,9 @@ on /slots operations and reports per-model load state via a `status` field in
 /v1/models. A plain single-model backend has neither. The client must:
 - add `?model=X` to slot ops only when a model is supplied;
 - resolve the *loaded* model (not just the first entry);
-- detect router mode from the presence of a `status` field.
+- detect router mode from the presence of a `status` field;
+- map a client model name to a model id through the preset ids/aliases, which
+  works regardless of which model is loaded.
 """
 
 import json
@@ -42,6 +44,18 @@ def router_models_resp():
             "data": [
                 {"id": "qwen.fast", "status": {"value": "unloaded"}},
                 {"id": "qwen.nvfp4", "status": {"value": "loaded"}},
+            ]
+        },
+    )
+
+
+def router_all_unloaded_resp():
+    return resp(
+        200,
+        {
+            "data": [
+                {"id": "qwen.fast", "status": {"value": "unloaded"}},
+                {"id": "qwen.nvfp4", "status": {"value": "unloaded"}},
             ]
         },
     )
@@ -287,6 +301,24 @@ async def test_get_model_id_plain_falls_back_to_first():
 
 
 @pytest.mark.asyncio
+async def test_get_model_id_unknown_when_router_nothing_loaded():
+    """A router with no loaded model must NOT fall back to the first preset
+    entry: that id names a different model than the one that will serve the
+    request, which forks the cache namespace and breaks alias resolution."""
+    c = make_client()
+    c.client.get = AsyncMock(return_value=router_all_unloaded_resp())
+    assert await c.get_model_id() == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_get_loaded_model_none_when_router_nothing_loaded():
+    """Same as above for get_loaded_model: None, never a wrong model id."""
+    c = make_client()
+    c.client.get = AsyncMock(return_value=router_all_unloaded_resp())
+    assert await c.get_loaded_model() is None
+
+
+@pytest.mark.asyncio
 async def test_get_loaded_model_returns_loaded():
     c = make_client()
     c.client.get = AsyncMock(return_value=router_models_resp())
@@ -305,6 +337,132 @@ async def test_get_loaded_model_plain_returns_first():
     c = make_client()
     c.client.get = AsyncMock(return_value=plain_models_resp("m1"))
     assert await c.get_loaded_model() == "m1"
+
+
+# --- alias resolution (id + aliases table) ---------------------------------
+
+
+def preset_resp(*models):
+    """A /v1/models body of preset entries: (id, aliases, status)."""
+    return resp(
+        200,
+        {
+            "data": [
+                {"id": mid, "aliases": aliases, "status": {"value": status}}
+                for mid, aliases, status in models
+            ]
+        },
+    )
+
+
+def real_preset_resp(loaded_id):
+    """The shape a --models-preset router actually serves: every model of the
+    preset with its aliases, only one of them loaded."""
+    return preset_resp(
+        ("Qwen3.6-35B-A3B", ["qwen.fast"], "unloaded"),
+        ("qwen.nvfp4-high", ["nvfp4"], "unloaded"),
+        (loaded_id, ["default", "dense", "opus"], "loaded"),
+        ("mradermacher/gemma-4-12b-crownelius-writer-GGUF", [], "unloaded"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_alias_resolves_while_every_model_is_unloaded():
+    """The restart case: a router serves the whole preset with its aliases while
+    nothing is loaded, so an alias still maps to its model id. This is what
+    keeps a backend restart from forking the cache namespace."""
+    c = make_client()
+    c.client.get = AsyncMock(return_value=real_preset_resp("unsloth/qwen.gguf"))
+    assert await c.resolve_model_id_cached("default") == "unsloth/qwen.gguf"
+
+
+@pytest.mark.asyncio
+async def test_resolve_returns_none_while_all_unloaded_and_name_unknown():
+    """Without the table there is nothing to resolve to -- and crucially NOT the
+    first preset entry, which names a different model."""
+    c = make_client()
+    c.client.get = AsyncMock(
+        return_value=preset_resp(("a-model", [], "unloaded"), ("b-model", [], "unloaded"))
+    )
+    assert await c.resolve_model_id_cached("default") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_matches_a_declared_alias():
+    c = make_client()
+    c.client.get = AsyncMock(return_value=real_preset_resp("unsloth/qwen.gguf"))
+    assert await c.resolve_model_id_cached("nvfp4") == "qwen.nvfp4-high"
+    assert await c.resolve_model_id_cached("qwen.fast") == "Qwen3.6-35B-A3B"
+
+
+@pytest.mark.asyncio
+async def test_resolve_matches_the_model_id_itself():
+    c = make_client()
+    c.client.get = AsyncMock(return_value=real_preset_resp("unsloth/qwen.gguf"))
+    assert await c.resolve_model_id_cached("qwen.nvfp4-high") == "qwen.nvfp4-high"
+
+
+@pytest.mark.asyncio
+async def test_resolve_none_for_unknown_name():
+    c = make_client()
+    c.client.get = AsyncMock(return_value=real_preset_resp("unsloth/qwen.gguf"))
+    assert await c.resolve_model_id_cached("nope") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_none_when_alias_is_claimed_twice():
+    """A duplicated alias is ambiguous. The caller must not guess which of the
+    two models is meant, so nothing is resolved."""
+    c = make_client()
+    c.client.get = AsyncMock(
+        return_value=preset_resp(("m1", ["default"], "unloaded"), ("m2", ["default"], "loaded"))
+    )
+    assert await c.resolve_model_id_cached("default") is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_tolerates_malformed_entries():
+    """A missing id, a non-dict entry or a non-list aliases field must not
+    raise: the fetch succeeded, it is just not resolvable."""
+    c = make_client()
+    c.client.get = AsyncMock(
+        return_value=resp(
+            200,
+            {
+                "data": [
+                    "not-a-dict",
+                    {"aliases": ["default"]},
+                    {"id": "m1", "aliases": None},
+                    {"id": "m2", "aliases": ["default"]},
+                ]
+            },
+        )
+    )
+    assert await c.resolve_model_id_cached("default") == "m2"
+
+
+@pytest.mark.asyncio
+async def test_resolve_shares_the_ttl_cache_with_model_id():
+    """Both derivations read the same cached list, so a client that always sends
+    an alias costs one /v1/models call per TTL, not one per request."""
+    c = make_client()
+    c.client.get = AsyncMock(return_value=real_preset_resp("unsloth/qwen.gguf"))
+    assert await c.resolve_model_id_cached("default") == "unsloth/qwen.gguf"
+    assert await c.get_model_id_cached() == "unsloth/qwen.gguf"
+    assert await c.resolve_model_id_cached("nvfp4") == "qwen.nvfp4-high"
+    assert c.client.get.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_resolve_falls_back_to_last_known_list_when_backend_down():
+    """A transient /v1/models failure must not stop alias resolution: the last
+    known preset table is reused."""
+    c = make_client()
+    c.client.get = AsyncMock(return_value=real_preset_resp("unsloth/qwen.gguf"))
+    assert await c.resolve_model_id_cached("default") == "unsloth/qwen.gguf"
+    c._models._at -= 1000  # expire
+    c.client.get = AsyncMock(side_effect=RuntimeError("backend down"))
+    assert await c.resolve_model_id_cached("default") == "unsloth/qwen.gguf"
 
 
 # --- router detection ------------------------------------------------------

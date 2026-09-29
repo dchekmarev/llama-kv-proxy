@@ -118,6 +118,56 @@ def test_aggregated_state(sm):
     assert second["last_used"] is None
 
 
+async def test_poll_slots_skips_pool_for_unknown_model(sm):
+    """A plain backend whose model id cannot be resolved must not create a pool
+    under the literal key "unknown". While /v1/models is down (backend restart)
+    that would merge every model into one namespace and orphan the cache bins
+    written under it; the previous pool is kept until the id is resolvable."""
+    client = MagicMock()
+    client.is_router = AsyncMock(return_value=False)
+    client.get_model_id = AsyncMock(return_value="unknown")
+    client.get_slots = AsyncMock(return_value=[_slot(0)])
+    sm.set_clients([client])
+    app_module.app.state.sm = sm
+    app_module.app.state.clients = [client]
+
+    await app_module._poll_slots()
+
+    assert sm.discovered_models() == set()
+
+
+async def test_poll_slots_keeps_previous_pool_when_id_unknown(sm):
+    """A transient discovery failure must not wipe the existing pool: requests
+    keep their slots, and routing stays correct until the id resolves again."""
+    client = MagicMock()
+    client.is_router = AsyncMock(return_value=False)
+    client.get_model_id = AsyncMock(return_value="unknown")
+    client.get_slots = AsyncMock(return_value=[_slot(0)])
+    sm.set_clients([client])
+    sm.set_backend_slots(0, "m1", [_slot(0), _slot(1)])
+    app_module.app.state.sm = sm
+    app_module.app.state.clients = [client]
+
+    await app_module._poll_slots()
+
+    assert sm._pools[(0, "m1")] == [0, 1]
+
+
+async def test_poll_slots_plain_uses_resolved_model(sm):
+    """The plain path still keys the pool by the resolved backend model id."""
+    client = MagicMock()
+    client.is_router = AsyncMock(return_value=False)
+    client.get_model_id = AsyncMock(return_value="m1")
+    client.get_slots = AsyncMock(return_value=[_slot(0), _slot(1)])
+    sm.set_clients([client])
+    app_module.app.state.sm = sm
+    app_module.app.state.clients = [client]
+
+    await app_module._poll_slots()
+
+    assert sm._pools[(0, "m1")] == [0, 1]
+
+
 async def test_slots_endpoint(sm):
     """GET /proxy/slots returns the aggregated state."""
     sm.set_backend_slots(0, "m1", [_slot(0)])

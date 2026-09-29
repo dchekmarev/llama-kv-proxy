@@ -27,6 +27,8 @@ def sm(monkeypatch):
     client.save_slot = AsyncMock(return_value=True)
     client.restore_slot = AsyncMock(return_value=True)
     client.get_model_id_cached = AsyncMock(return_value="m1")
+    # No preset alias table: a client model name maps to nothing here.
+    client.resolve_model_id_cached = AsyncMock(return_value=None)
     client.get_loaded_model = AsyncMock(return_value="m1")
     client.chat_completions = AsyncMock(return_value={"choices": []})
     client.delete_cache_file = AsyncMock(return_value=True)
