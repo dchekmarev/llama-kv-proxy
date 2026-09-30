@@ -239,15 +239,15 @@ Label cardinality is bounded by design: `model`, `backend`, `stream`, `outcome`,
 
 ## Project structure
 
-| File | Purpose |
+| Path | Purpose |
 |---|---|
-| `app.py` | FastAPI app: lifespan, request-id middleware, the thin `/v1/chat/completions` endpoint, pass-through, background loops (eviction, slot polling, `.bin` cleanup/reconciliation), non-chat endpoints |
-| `chat_flow.py` | Chat request pipeline: effective-model resolution, cache key, restore selection, slot acquisition, backend dispatch, streaming reader, save/meta/LRU follow-up |
+| `app/` | FastAPI app: lifespan, request-id middleware, the thin `/v1/chat/completions` endpoint, pass-through, background loops (eviction, slot polling, `.bin` cleanup/reconciliation), non-chat endpoints |
+| `chat_flow/` | Chat request pipeline: effective-model resolution, cache key, restore selection, slot acquisition, backend dispatch, streaming reader, save/meta/LRU follow-up |
 | `llama_kv_proxy.py` | uvicorn entry point |
 | `config.py` | Environment configuration |
 | `slot_manager.py` | Slot pools, LRU marks, per-slot locks, restore/save |
 | `llama_client.py` | HTTP client for llama.cpp: chat, slot save/restore/erase, models, metrics |
-| `hashing.py` | Prefix/block hashing, meta files, two-tier matching, eviction |
+| `hashing/` | Prefix/block hashing, meta files, two-tier matching, eviction |
 | `bin_cache.py` | Direct `.bin` cleanup, LRU size cap, meta/.bin reconciliation |
 | `metrics.py` | Prometheus aggregation of backend `/metrics` across backends/models |
 | `promstats.py` | Proxy-level `llama_kv_proxy_*` metrics (dedicated registry) and storage gauges |
@@ -265,9 +265,8 @@ pip install -r requirements-dev.txt mypy
 
 python3 -m pytest tests/ -q   # run the test suite
 ruff check .                  # lint
-python3 -m mypy app.py config.py slot_manager.py llama_client.py \
-  hashing.py bin_cache.py metrics.py request_id.py version.py llama_kv_proxy.py \
-  chat_flow.py
+python3 -m mypy app/ chat_flow/ config.py slot_manager.py llama_client.py \
+  hashing/ bin_cache.py metrics.py request_id.py version.py llama_kv_proxy.py
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same checks (ruff, mypy, pytest) on every push and pull request.
