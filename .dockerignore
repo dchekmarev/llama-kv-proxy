@@ -1,0 +1,13 @@
+.git/
+kv_meta/
+kv_reqlog/
+docker-compose.override.yml
+__pycache__/
+*.pyc
+.env
+tests/
+*.md
+requirements-dev.txt
+pytest.ini
+.pytest_cache/
+.ruff_cache/
