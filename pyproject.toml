@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llama-kv-proxy"
+description = "OpenAI-compatible proxy that restores llama.cpp KV cache slots by conversation prefix"
+requires-python = ">=3.11"
+# Runtime dependencies are pinned in requirements.txt (used by the Dockerfile).
+dependencies = []
+
+# Single source of truth for the version: version.py.
+dynamic = ["version"]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "ruff==0.16.0", "mypy"]
+
+[tool.setuptools.dynamic]
+version = { attr = "version.__version__" }
+
+[tool.setuptools]
+packages = ["app", "chat_flow", "hashing"]
+py-modules = [
+    "bin_cache",
+    "config",
+    "llama_client",
+    "llama_kv_proxy",
+    "meta_index",
+    "metrics",
+    "promstats",
+    "reqlog",
+    "request_id",
+    "slot_manager",
+    "ui",
+    "ui_page",
+    "version",
+]

@@ -1,8 +1,10 @@
 # For full reproducibility pin to a digest, e.g. python:3.11-slim@sha256:...
 FROM python:3.11-slim
 
-# Keep in sync with version.py (the single source of truth).
-ARG VERSION=0.0.1
+# Image version. The single source of truth is version.py; the default is a dev
+# placeholder, not a version to keep in sync. Pass the real one explicitly:
+#   docker build --build-arg VERSION=$(python -c "import version; print(version.__version__)") .
+ARG VERSION=0.0.0+dev
 LABEL version=${VERSION}
 
 # Run as a non-root user matching the host user (pass via build args) so mounted

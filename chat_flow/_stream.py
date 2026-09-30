@@ -118,7 +118,7 @@ async def start_stream_task(
                     ui_obs.req_ttft(rid, ttft)
                 try:
                     await asyncio.wait_for(queue.put(chunk), timeout=chat_flow.STREAM_PUT_TIMEOUT)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # Consumer gone (the queue is not drained): stop pushing
                     # and move on to cleanup. The stream was not read to the
                     # end, so the KV cache must not be saved. Signal the
@@ -341,7 +341,7 @@ async def start_stream_task(
             # block (the slot is already released).
             try:
                 await asyncio.wait_for(queue.put(None), timeout=chat_flow.STREAM_PUT_TIMEOUT)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 log.warning("stream_reader_sentinel_timeout g=%s key=%s", g, key[:16])
 
     reader_task = asyncio.create_task(reader())

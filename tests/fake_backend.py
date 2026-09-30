@@ -113,7 +113,7 @@ async def _sleep_or_disconnect(disc: asyncio.Future, seconds: float) -> bool:
             return False
         try:
             return await asyncio.wait_for(asyncio.shield(disc), timeout=remaining)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
 
 

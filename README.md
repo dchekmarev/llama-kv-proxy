@@ -254,6 +254,7 @@ Label cardinality is bounded by design: `model`, `backend`, `stream`, `outcome`,
 | `request_id.py` | Per-request correlation id (ContextVar + log filter) |
 | `reqlog.py` | Request/response/prefix JSON logging with group rotation |
 | `version.py` | Single source of truth for the proxy version |
+| `pyproject.toml` | Project metadata; reads the version from `version.py` |
 | `tests/` | pytest suite |
 
 ## Development

@@ -119,7 +119,7 @@ async def chat_flow(
                 ),
                 timeout=chat_flow_pkg.ACQUIRE_TIMEOUT,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.error(
                 "acquire_timeout is_big=%s restore_key=%s",
                 is_big,

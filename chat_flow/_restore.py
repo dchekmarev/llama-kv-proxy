@@ -67,7 +67,7 @@ async def _wait_for_inflight_save(prefix_hashes: list[str]) -> bool:
         return False
     try:
         await asyncio.wait_for(ev.wait(), timeout=chat_flow.SAVE_WAIT_TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         log.warning("inflight_save_wait_timeout timeout_s=%.1f", chat_flow.SAVE_WAIT_TIMEOUT)
         return False
     log.info("inflight_save_waited")
