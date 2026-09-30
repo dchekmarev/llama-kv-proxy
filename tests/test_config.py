@@ -120,11 +120,28 @@ def test_env_bool_truthy_and_falsy(monkeypatch):
     assert config._env_bool("ERASE_BEFORE_SMALL", True) is True
 
 
-def test_setup_logging_is_idempotent():
-    """Calling setup_logging twice must not stack duplicate handlers."""
-    import logging
+def test_init_runtime_creates_dirs(monkeypatch, tmp_path):
+    """init_runtime creates the meta and request-log directories."""
+    meta = tmp_path / "kv_meta"
+    reqlog = tmp_path / "kv_reqlog"
+    monkeypatch.setattr(config, "META_DIR", str(meta))
+    monkeypatch.setattr(config, "REQUEST_LOG_DIR", str(reqlog))
+    config.init_runtime()
+    assert meta.is_dir()
+    assert reqlog.is_dir()
 
-    config.setup_logging("INFO")
-    n = len(logging.getLogger().handlers)
-    config.setup_logging("DEBUG")
-    assert len(logging.getLogger().handlers) == n
+
+def test_init_runtime_skips_empty_request_log_dir(monkeypatch, tmp_path):
+    """An empty REQUEST_LOG_DIR disables the directory, no mkdir."""
+    meta = tmp_path / "kv_meta"
+    monkeypatch.setattr(config, "META_DIR", str(meta))
+    monkeypatch.setattr(config, "REQUEST_LOG_DIR", "")
+    config.init_runtime()
+    assert meta.is_dir()
+
+
+def test_init_runtime_validates_backends(monkeypatch):
+    """Backends are validated at startup, not at import time."""
+    monkeypatch.setattr(config, "BACKENDS", [])
+    with pytest.raises(ValueError, match="empty"):
+        config.init_runtime()

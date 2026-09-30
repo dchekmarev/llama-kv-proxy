@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Build the backend clients, start the background jobs, close on exit."""
     app_pkg.setup_logging(app_pkg.LOG_LEVEL)
+    app_pkg.init_runtime()
     clients: list[LlamaClient] = [
         app_pkg.LlamaClient(be["url"]) for be in app_pkg.BACKENDS
     ]

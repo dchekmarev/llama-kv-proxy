@@ -5,13 +5,13 @@ Unified configuration for llama-kv-proxy:
 - BACKENDS: [{"url": "...", "n_slots": N}]
 - WORDS_PER_BLOCK, BIG_THRESHOLD_WORDS, LCP_TH
 - PORT, REQUEST_TIMEOUT, MODEL_ID
+
+This module only reads the environment: it creates no directories and
+configures no logging at import time. Call init_runtime() at startup.
 """
 
 import json
-import logging
 import os
-
-from request_id import RequestIdFilter
 
 
 def parse_backends_env(raw: str | None) -> list[dict]:
@@ -98,7 +98,6 @@ def _env_bool(name: str, default: bool) -> bool:
 # Backends
 BACKENDS_RAW = os.getenv("BACKENDS")
 BACKENDS = parse_backends_env(BACKENDS_RAW)
-validate_backends(BACKENDS)
 
 # Words per block for LCP
 WORDS_PER_BLOCK = _env_int("WORDS_PER_BLOCK", 100)
@@ -113,7 +112,6 @@ LCP_TH = _env_float("LCP_TH", 0.6)
 # location does not change depending on where the process was started.
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 META_DIR = os.path.join(APP_DIR, os.getenv("META_DIR", "kv_meta"))
-os.makedirs(META_DIR, exist_ok=True)
 
 # HTTP timeout
 REQUEST_TIMEOUT = _env_float("REQUEST_TIMEOUT", 1500)
@@ -257,10 +255,8 @@ RENDER_CTX_FIELDS: tuple[str, ...] = (
 # for streams) named {timestamp_ms}.{request_id}.{type}.json. Relative paths
 # are anchored to the app directory (like META_DIR). Empty disables logging.
 REQUEST_LOG_DIR = os.getenv("REQUEST_LOG_DIR", "kv_reqlog")
-if REQUEST_LOG_DIR:
-    if not os.path.isabs(REQUEST_LOG_DIR):
-        REQUEST_LOG_DIR = os.path.join(APP_DIR, REQUEST_LOG_DIR)
-    os.makedirs(REQUEST_LOG_DIR, exist_ok=True)
+if REQUEST_LOG_DIR and not os.path.isabs(REQUEST_LOG_DIR):
+    REQUEST_LOG_DIR = os.path.join(APP_DIR, REQUEST_LOG_DIR)
 # Max number of request groups kept in the directory; oldest groups (all their
 # files) are deleted first. 0 disables rotation (keep everything).
 REQUEST_LOG_MAX_GROUPS = _env_int("REQUEST_LOG_MAX_GROUPS", 100)
@@ -286,26 +282,14 @@ PORT = _env_int("PORT", 8081)
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 
 
-_logging_configured = False
+def init_runtime() -> None:
+    """Validate the config and create the directories the proxy writes to.
 
-
-def setup_logging(level: str = "INFO") -> None:
-    """Configure the root logger once (idempotent).
-
-    Called from the entry point and app startup so logging is set up
-    regardless of launch mode (python llama_kv_proxy.py or uvicorn app:app).
-    Importing config no longer configures logging as a side effect. The
-    request-id filter is attached to the root handlers so every record carries
-    the current request's correlation id (empty outside a request).
+    Called from the app lifespan instead of at import time: importing config
+    must not touch the filesystem, so tests, linters and scripts can import it
+    without side effects. Idempotent.
     """
-    global _logging_configured
-    if _logging_configured:
-        return
-    root = logging.getLogger()
-    logging.basicConfig(
-        level=level.upper(),
-        format="%(asctime)s %(levelname)s [%(request_id)s] %(name)s: %(message)s",
-    )
-    for handler in root.handlers:
-        handler.addFilter(RequestIdFilter())
-    _logging_configured = True
+    validate_backends(BACKENDS)
+    os.makedirs(META_DIR, exist_ok=True)
+    if REQUEST_LOG_DIR:
+        os.makedirs(REQUEST_LOG_DIR, exist_ok=True)

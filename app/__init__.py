@@ -48,9 +48,10 @@ from config import (
     SLOT_POLL_INTERVAL_S,
     STUCK_SLOT_THRESHOLD_S,
     UI_ENABLED,
-    setup_logging,
+    init_runtime,
 )
 from llama_client import LlamaClient
+from logging_setup import setup_logging
 from slot_manager import SlotManager
 
 from ._asgi import app, lifespan
@@ -122,6 +123,7 @@ __all__ = [
     "cache_stats",
     "chat",
     "health",
+    "init_runtime",
     "lifespan",
     "metrics_endpoint",
     "models",
