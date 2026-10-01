@@ -11,11 +11,11 @@ from collections.abc import AsyncGenerator
 import httpx
 
 import chat_flow
-import promstats
-import reqlog
-import ui as ui_obs
-from llama_client import LlamaClient
-from slot_manager import GSlot, SlotManager
+from backend.llama_client import LlamaClient
+from backend.slot_manager import GSlot, SlotManager
+from core import promstats
+from obs import reqlog
+from obs import ui as ui_obs
 
 from . import _state
 

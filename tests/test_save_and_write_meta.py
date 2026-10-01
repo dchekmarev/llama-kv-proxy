@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import bin_cache
 import chat_flow
 import hashing as hs
+from cache import bin_cache
 
 
 def _sm():
@@ -169,7 +169,7 @@ async def test_empty_capture_clears_the_saved_key(meta_dir, monkeypatch):
     _write_prefix("h_ab", ["h_a", "h_ab"])
 
     # A real SlotManager: the state under test is its _last_saved record.
-    from slot_manager import SlotManager
+    from backend.slot_manager import SlotManager
 
     sm = SlotManager()
     client = MagicMock()

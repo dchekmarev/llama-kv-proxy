@@ -1,4 +1,4 @@
-# config.py
+# core/config.py
 
 """
 Unified configuration for llama-kv-proxy:
@@ -109,8 +109,11 @@ BIG_THRESHOLD_WORDS = _env_int("BIG_THRESHOLD_WORDS", 500)
 LCP_TH = _env_float("LCP_TH", 0.6)
 
 # Meta dir: anchored to the app directory, not the process cwd, so the cache
-# location does not change depending on where the process was started.
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
+# location does not change depending on where the process was started. This
+# module lives in the core/ package, so the app directory is its parent: the
+# kv_meta/ and kv_reqlog/ dirs sit next to app/, chat_flow/ and friends, not
+# inside core/.
+APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 META_DIR = os.path.join(APP_DIR, os.getenv("META_DIR", "kv_meta"))
 
 # HTTP timeout

@@ -13,10 +13,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import hashing as hs
-import promstats
-import slot_manager as sm_module
-import ui as ui_obs
-from slot_manager import SlotManager
+from backend import slot_manager as sm_module
+from backend.slot_manager import SlotManager
+from core import promstats
+from obs import ui as ui_obs
 
 
 @pytest.fixture(autouse=True)

@@ -42,9 +42,8 @@ import time
 from collections.abc import Callable
 from typing import NamedTuple
 
-import promstats
-from config import META_DIR, META_INDEX_ENABLED, WORDS_PER_BLOCK
-from meta_index import MetaIndex
+from core import promstats
+from core.config import META_DIR, META_INDEX_ENABLED, WORDS_PER_BLOCK
 
 from ._evict import (
     _clear_all_meta,
@@ -54,6 +53,7 @@ from ._evict import (
     evict_meta_async,
 )
 from ._index_ops import _index_entries, rebuild_index_async, reconcile_index_async
+from ._meta_index import MetaIndex
 from ._meta_io import (
     META_SUFFIX,
     _atomic_write,

@@ -9,7 +9,7 @@ import json
 import os
 import time
 
-import bin_cache
+from cache import bin_cache
 
 _MB = 1024 * 1024
 

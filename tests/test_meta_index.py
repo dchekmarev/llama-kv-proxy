@@ -12,8 +12,8 @@ import pytest
 
 import app as app_module
 import hashing as hs
-import meta_index
-import promstats
+from core import promstats
+from hashing import _meta_index as meta_index
 
 # ---- fixtures / helpers -----------------------------------------------------
 

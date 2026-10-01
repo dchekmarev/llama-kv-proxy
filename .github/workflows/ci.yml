@@ -26,10 +26,7 @@ jobs:
 
       - name: Type check (mypy)
         run: |
-          python -m mypy app/ chat_flow/ config.py logging_setup.py \
-            slot_manager.py llama_client.py hashing/ bin_cache.py metrics.py \
-            request_id.py version.py llama_kv_proxy.py meta_index.py \
-            promstats.py reqlog.py ui.py ui_page.py
+          python -m mypy app/ backend/ cache/ chat_flow/ core/ hashing/ obs/
 
       - name: Test (pytest)
         run: python -m pytest tests/ -q

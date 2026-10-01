@@ -11,11 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import bin_cache
 import chat_flow
 import hashing as hs
-import slot_manager as sm_module
-from slot_manager import SlotManager
+from backend import slot_manager as sm_module
+from backend.slot_manager import SlotManager
+from cache import bin_cache
 
 # ---- helpers ----------------------------------------------------------------
 

@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-import config
+from core import config
 
 
 def test_parse_backends_env_broken_json_raises():
@@ -73,8 +73,10 @@ def test_meta_dir_is_absolute_and_in_app_dir():
     assert os.path.isabs(config.META_DIR), (
         f"META_DIR must be absolute, got {config.META_DIR!r}"
     )
-    app_dir = os.path.dirname(os.path.abspath(config.__file__))
-    assert config.META_DIR.startswith(app_dir), (
+    # config lives in the core/ package; the app dir is its parent.
+    pkg_dir = os.path.dirname(os.path.abspath(config.__file__))
+    app_dir = os.path.dirname(pkg_dir)
+    assert config.META_DIR.startswith(app_dir + os.sep), (
         f"META_DIR must live in the app dir {app_dir!r}, got {config.META_DIR!r}"
     )
 

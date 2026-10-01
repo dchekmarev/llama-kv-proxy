@@ -5,7 +5,7 @@ idempotent no matter which launch mode called it."""
 
 import logging
 
-from logging_setup import setup_logging
+from core.logging_setup import setup_logging
 
 
 def test_setup_logging_is_idempotent():
@@ -18,7 +18,7 @@ def test_setup_logging_is_idempotent():
 
 def test_setup_logging_attaches_request_id_filter():
     """Every root handler carries the request-id filter, so records correlate."""
-    from request_id import RequestIdFilter
+    from core.request_id import RequestIdFilter
 
     setup_logging("INFO")
     for handler in logging.getLogger().handlers:

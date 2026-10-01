@@ -8,7 +8,7 @@ import time
 from typing import NamedTuple
 
 import hashing as hs
-import promstats
+from core import promstats
 
 from ._state import log
 

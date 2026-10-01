@@ -7,7 +7,7 @@ import asyncio
 from collections.abc import Callable
 
 import hashing as hs
-import promstats
+from core import promstats
 
 
 def _lcp_len(request: list[str], candidate: list[str]) -> int:

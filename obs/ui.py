@@ -1,4 +1,4 @@
-# ui.py
+# obs/ui.py
 
 """Live request observability for the /proxy/ui/ dashboard.
 
@@ -16,7 +16,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-import config
+from core import config
 
 log = logging.getLogger(__name__)
 

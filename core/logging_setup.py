@@ -1,4 +1,4 @@
-# logging_setup.py
+# core/logging_setup.py
 
 """Root logger configuration for the proxy.
 
@@ -10,7 +10,7 @@ uvicorn app:app).
 
 import logging
 
-from request_id import RequestIdFilter
+from .request_id import RequestIdFilter
 
 _logging_configured = False
 

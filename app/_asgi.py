@@ -17,7 +17,7 @@ from fastapi import FastAPI
 
 import app as app_pkg
 import hashing
-from llama_client import LlamaClient
+from backend.llama_client import LlamaClient
 
 log = logging.getLogger(__name__)
 

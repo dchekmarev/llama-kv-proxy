@@ -18,14 +18,13 @@ from fastapi import Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 import app as app_pkg
-import bin_cache
 import chat_flow
 import hashing
-import metrics
-import promstats
-import ui as ui_obs
-import ui_page
-import version as version_info
+from cache import bin_cache
+from core import promstats
+from core import version as version_info
+from obs import metrics, ui_page
+from obs import ui as ui_obs
 
 log = logging.getLogger(__name__)
 

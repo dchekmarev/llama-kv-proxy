@@ -6,7 +6,7 @@ import asyncio
 import os
 
 import hashing as hs
-import promstats
+from core import promstats
 
 from ._state import _OUTCOME_HIT, _OUTCOME_MISS, log
 

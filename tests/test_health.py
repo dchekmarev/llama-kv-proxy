@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import app as app_module
-import slot_manager as sm_module
-from llama_client import LlamaClient
-from slot_manager import SlotManager
+from backend import slot_manager as sm_module
+from backend.llama_client import LlamaClient
+from backend.slot_manager import SlotManager
 
 
 @pytest.fixture()

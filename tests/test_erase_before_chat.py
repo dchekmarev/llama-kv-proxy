@@ -17,15 +17,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import chat_flow
-from llama_client import RESTORE_MISSING
-from slot_manager import GSlot, SlotManager
+from backend.llama_client import RESTORE_MISSING
+from backend.slot_manager import GSlot, SlotManager
 
 G: GSlot = (0, "m1", 0)
 
 
 @pytest.fixture()
 def sm(monkeypatch):
-    import slot_manager as sm_module
+    from backend import slot_manager as sm_module
 
     monkeypatch.setattr(sm_module, "BACKENDS", [{"url": "http://be", "n_slots": 2}])
     manager = SlotManager()

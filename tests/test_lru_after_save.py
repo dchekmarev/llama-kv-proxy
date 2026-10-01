@@ -17,8 +17,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import app as app_module
-import bin_cache
 import chat_flow
+from cache import bin_cache
 
 
 class FakeResp:

@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from fastapi import Request, Response
 
 import app as app_pkg
-from request_id import request_id_var, sanitize_request_id
+from core.request_id import request_id_var, sanitize_request_id
 
 
 @app_pkg.app.middleware("http")

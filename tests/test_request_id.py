@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 import app as app_module
-from request_id import (
+from core.request_id import (
     RequestIdFilter,
     new_request_id,
     request_id_var,

@@ -1,4 +1,4 @@
-# promstats.py
+# core/promstats.py
 
 """Proxy-level Prometheus metrics (llama_kv_proxy_*).
 
@@ -28,7 +28,7 @@ from prometheus_client import (
     generate_latest,
 )
 
-from config import BIN_CACHE_DIR, META_DIR
+from .config import BIN_CACHE_DIR, META_DIR
 
 REGISTRY = CollectorRegistry()
 

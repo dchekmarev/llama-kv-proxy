@@ -34,4 +34,4 @@ EXPOSE 8081
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 --start-period=20s \
     CMD python -c "import json,os,sys,urllib.request; p=os.environ.get('PORT','8081'); d=json.load(urllib.request.urlopen(f'http://localhost:{p}/proxy/health')); sys.exit(0 if d.get('ok') else 1)"
 
-CMD ["python", "llama_kv_proxy.py"]
+CMD ["python", "-m", "app"]

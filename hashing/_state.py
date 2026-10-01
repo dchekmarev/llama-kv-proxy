@@ -9,7 +9,7 @@ object.
 
 import logging
 
-from meta_index import MetaIndex
+from ._meta_index import MetaIndex
 
 log = logging.getLogger("hashing")
 

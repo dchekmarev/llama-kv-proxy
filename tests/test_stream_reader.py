@@ -18,8 +18,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import chat_flow
-import slot_manager as sm_module
-from slot_manager import SlotManager
+from backend import slot_manager as sm_module
+from backend.slot_manager import SlotManager
 
 
 class FakeResp:
@@ -586,7 +586,7 @@ async def test_disconnect_at_aclose_ends_ui_request(sm, monkeypatch):
     it: the slot was released, but registry.active kept the request forever --
     a permanently "generating" row and a busy_rid painted on a free slot."""
     import hashing
-    import ui
+    from obs import ui
 
     rid = "rid-aclose-cancel"
     monkeypatch.setattr(hashing, "write_meta_async", AsyncMock())

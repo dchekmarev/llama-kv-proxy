@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 import chat_flow
-import reqlog
+from obs import reqlog
 
 
 @pytest.fixture()
@@ -208,7 +208,7 @@ async def test_decision_written_on_provider_error(reqlog_dir, sm, meta_dir):
     )
     app_module.app.state.sm = sm
     app_module.app.state.clients = [sm.backends[0]["client"]]
-    from request_id import request_id_var
+    from core.request_id import request_id_var
 
     token = request_id_var.set("rid_err")
     try:

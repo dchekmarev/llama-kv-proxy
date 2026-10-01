@@ -1,4 +1,4 @@
-# slot_manager.py
+# backend/slot_manager.py
 
 """Exclusive backend slot pools: discovery, FIFO acquisition, KV bookkeeping.
 
@@ -41,9 +41,9 @@ import time
 from collections import deque
 from collections.abc import Callable
 
-import promstats
-from config import BACKENDS, SKIP_RESTORE_SAME_SLOT, SLOT_FRESHEN_INTERVAL_S
-from llama_client import RESTORE_ERROR
+from backend.llama_client import RESTORE_ERROR
+from core import promstats
+from core.config import BACKENDS, SKIP_RESTORE_SAME_SLOT, SLOT_FRESHEN_INTERVAL_S
 
 log = logging.getLogger(__name__)
 

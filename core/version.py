@@ -1,4 +1,4 @@
-# version.py
+# core/version.py
 
 """Single source of truth for the proxy version.
 

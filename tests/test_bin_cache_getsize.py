@@ -6,7 +6,7 @@ The backend .bin file is named exactly by the cache key (no suffix), matching
 delete_bin_file / _make_bin conventions.
 """
 
-import bin_cache
+from cache import bin_cache
 
 
 def test_get_bin_size_existing(tmp_path):

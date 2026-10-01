@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 
-from llama_client import RESTORE_MISSING, LlamaClient
+from backend.llama_client import RESTORE_MISSING, LlamaClient
 
 
 def make_client():

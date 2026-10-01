@@ -32,7 +32,9 @@ background jobs share: it belongs to the FastAPI instance built in _asgi.
 import asyncio
 import time
 
-from config import (
+from backend.llama_client import LlamaClient
+from backend.slot_manager import SlotManager
+from core.config import (
     BACKENDS,
     BIN_CACHE_DIR,
     BIN_CACHE_MAX_MB,
@@ -50,9 +52,7 @@ from config import (
     UI_ENABLED,
     init_runtime,
 )
-from llama_client import LlamaClient
-from logging_setup import setup_logging
-from slot_manager import SlotManager
+from core.logging_setup import setup_logging
 
 from ._asgi import app, lifespan
 from .background import (

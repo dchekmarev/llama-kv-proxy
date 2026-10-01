@@ -1,4 +1,4 @@
-# ui_page.py
+# obs/ui_page.py
 
 """The /proxy/ui/ dashboard page: a single self-contained HTML document
 (vanilla JS, no external assets) served by the proxy on the same port.

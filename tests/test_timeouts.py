@@ -8,7 +8,7 @@ import importlib
 import pytest
 
 import chat_flow
-import config
+from core import config
 
 
 def test_acquire_timeout_default():

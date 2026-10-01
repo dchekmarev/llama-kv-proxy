@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import config
-from llama_client import LlamaClient
+from backend.llama_client import LlamaClient
+from core import config
 
 
 def make_client():

@@ -16,30 +16,22 @@ dependencies = [
     "uvicorn>=0.38.0",
 ]
 
-# Single source of truth for the version: version.py.
+# Single source of truth for the version: core/version.py.
 dynamic = ["version"]
 
 [project.optional-dependencies]
 dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "ruff==0.16.0", "mypy"]
 
 [tool.setuptools.dynamic]
-version = { attr = "version.__version__" }
+version = { attr = "core.version.__version__" }
 
 [tool.setuptools]
-packages = ["app", "chat_flow", "hashing"]
-py-modules = [
-    "bin_cache",
-    "config",
-    "llama_client",
-    "llama_kv_proxy",
-    "logging_setup",
-    "meta_index",
-    "metrics",
-    "promstats",
-    "reqlog",
-    "request_id",
-    "slot_manager",
-    "ui",
-    "ui_page",
-    "version",
+packages = [
+    "app",
+    "backend",
+    "cache",
+    "chat_flow",
+    "core",
+    "hashing",
+    "obs",
 ]

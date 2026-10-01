@@ -6,8 +6,8 @@ import asyncio
 
 import chat_flow
 import hashing as hs
-import promstats
-from llama_client import LlamaClient
+from backend.llama_client import LlamaClient
+from core import promstats
 
 from . import _state
 

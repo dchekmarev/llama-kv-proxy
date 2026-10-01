@@ -1,7 +1,6 @@
-# llama_kv_proxy.py
+# app/__main__.py
 
-"""
-Uvicorn entry point.
+"""Uvicorn entry point (``python -m app``).
 
 IMPORTANT: run with a single worker (the default). The slot manager keeps
 per-process state (locks, LRU marks); multiple workers would each track
@@ -10,9 +9,10 @@ slots independently and could route two requests to the same slot.
 
 import uvicorn
 
-from app import app
-from config import LOG_LEVEL, PORT
-from logging_setup import setup_logging
+from core.config import LOG_LEVEL, PORT
+from core.logging_setup import setup_logging
+
+from ._asgi import app
 
 if __name__ == "__main__":
     setup_logging(LOG_LEVEL)

@@ -10,12 +10,12 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import chat_flow as chat_flow_pkg
 import hashing as hs
-import promstats
-import reqlog
-import ui as ui_obs
-from llama_client import LlamaClient
-from request_id import request_id_var
-from slot_manager import SlotManager
+from backend.llama_client import LlamaClient
+from backend.slot_manager import SlotManager
+from core import promstats
+from core.request_id import request_id_var
+from obs import reqlog
+from obs import ui as ui_obs
 
 from . import _state
 

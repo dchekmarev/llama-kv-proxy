@@ -7,7 +7,7 @@ import json
 
 import chat_flow
 import hashing as hs
-import reqlog
+from obs import reqlog
 
 from . import _state
 

@@ -50,12 +50,12 @@ from collections.abc import AsyncGenerator
 import httpx
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-import bin_cache
 import hashing as hs
-import promstats
-import reqlog
-import ui as ui_obs
-from config import (
+from backend.llama_client import RESTORE_MISSING, LlamaClient
+from backend.slot_manager import GSlot, SlotManager
+from cache import bin_cache
+from core import promstats
+from core.config import (
     ACQUIRE_TIMEOUT,
     BIG_THRESHOLD_WORDS,
     BIN_CACHE_DIR,
@@ -69,9 +69,9 @@ from config import (
     SAVE_WAIT_TIMEOUT,
     WORDS_PER_BLOCK,
 )
-from llama_client import RESTORE_MISSING, LlamaClient
-from request_id import request_id_var
-from slot_manager import GSlot, SlotManager
+from core.request_id import request_id_var
+from obs import reqlog
+from obs import ui as ui_obs
 
 from ._chat import chat_flow
 from ._content import (

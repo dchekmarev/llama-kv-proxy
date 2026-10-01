@@ -102,7 +102,7 @@ Without it, the SWA layers keep a cache of only `n_swa` cells, i.e. the last win
 git clone https://github.com/dchekmarev/llama-kv-proxy.git
 cd llama-kv-proxy
 python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt
-python3 llama_kv_proxy.py  # or: uvicorn app:app --host 0.0.0.0 --port 8081
+python3 -m app  # or: uvicorn app:app --host 0.0.0.0 --port 8081
 ```
 
 Run the proxy with a **single worker** (the default). The slot manager keeps per-process state (locks, LRU marks); multiple workers would each track slots independently and could route two requests to the same slot.
@@ -245,25 +245,19 @@ Label cardinality is bounded by design: `model`, `backend`, `stream`, `outcome`,
 
 ## Project structure
 
+Every package is imported by its own name (`from core import config`), never
+as a flat top-level module, and the layer below never imports the one above:
+`core` <- `backend` / `cache` / `hashing` <- `chat_flow` / `obs` <- `app`.
+
 | Path | Purpose |
 |---|---|
-| `app/` | FastAPI app: lifespan, request-id middleware, the thin `/v1/chat/completions` endpoint, pass-through, background loops (eviction, slot polling, `.bin` cleanup/reconciliation), non-chat endpoints |
+| `app/` | FastAPI app: lifespan, request-id middleware, the thin `/v1/chat/completions` endpoint, pass-through, background loops (eviction, slot polling, `.bin` cleanup/reconciliation), non-chat endpoints. `python -m app` is the uvicorn entry point |
 | `chat_flow/` | Chat request pipeline: effective-model resolution, cache key, restore selection, slot acquisition, backend dispatch, streaming reader, save/meta/LRU follow-up |
-| `llama_kv_proxy.py` | uvicorn entry point |
-| `config.py` | Environment configuration (no import side effects; `init_runtime()` validates and creates the cache dirs at startup) |
-| `logging_setup.py` | Root logger configuration with the request-id filter |
-| `slot_manager.py` | Slot pools, LRU marks, per-slot locks, restore/save |
-| `llama_client.py` | HTTP client for llama.cpp: chat, slot save/restore/erase, models, metrics |
-| `hashing/` | Prefix/block hashing, meta files, two-tier matching, eviction |
-| `bin_cache.py` | Direct `.bin` cleanup, LRU size cap, meta/.bin reconciliation |
-| `metrics.py` | Prometheus aggregation of backend `/metrics` across backends/models |
-| `promstats.py` | Proxy-level `llama_kv_proxy_*` metrics (dedicated registry) and storage gauges |
-| `request_id.py` | Per-request correlation id (ContextVar + log filter) |
-| `reqlog.py` | Request/response/prefix JSON logging with group rotation |
-| `meta_index.py` | In-RAM index over the on-disk meta files (search, TTL, write/delete) |
-| `ui.py` | Live request registry and the dashboard's event stream |
-| `ui_page.py` | The dashboard HTML |
-| `version.py` | Single source of truth for the proxy version |
+| `core/` | Cross-cutting infrastructure: `config` (environment configuration, no import side effects; `init_runtime()` validates and creates the cache dirs at startup), `logging_setup` (root logger with the request-id filter), `request_id` (per-request correlation id: ContextVar + log filter), `promstats` (proxy-level `llama_kv_proxy_*` metrics on a dedicated registry, plus the storage gauges), `version` (single source of truth for the proxy version) |
+| `backend/` | `llama_client`: HTTP client for llama.cpp (chat, slot save/restore/erase, models, metrics). `slot_manager`: slot pools, LRU marks, per-slot locks, restore/save |
+| `hashing/` | Prefix/block hashing, meta files, the in-RAM restore index, two-tier matching, eviction |
+| `cache/` | Direct `.bin` cleanup, LRU size cap, meta/`.bin` reconciliation |
+| `obs/` | `metrics`: Prometheus aggregation of backend `/metrics` across backends/models. `reqlog`: request/response/prefix JSON logging with group rotation. `ui`: live request registry and the dashboard's event stream. `ui_page`: the dashboard HTML |
 | `pyproject.toml` | Project metadata; reads the version from `version.py` |
 | `tests/` | pytest suite |
 

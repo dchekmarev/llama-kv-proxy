@@ -18,10 +18,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-import slot_manager as sm_module
-from llama_client import RESTORE_ERROR
-from promstats import counter_sum, restore_skipped_same_slot_total
-from slot_manager import SlotManager
+from backend import slot_manager as sm_module
+from backend.llama_client import RESTORE_ERROR
+from backend.slot_manager import SlotManager
+from core.promstats import counter_sum, restore_skipped_same_slot_total
 
 
 @pytest.fixture()

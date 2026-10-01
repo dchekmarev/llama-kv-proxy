@@ -9,7 +9,7 @@ import time
 
 import pytest
 
-import bin_cache
+from cache import bin_cache
 
 
 @pytest.fixture()

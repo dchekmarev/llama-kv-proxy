@@ -2,13 +2,13 @@
 
 """Slot save, meta write, subsumed-meta cleanup and the background save task."""
 
-import bin_cache
 import chat_flow
 import hashing as hs
-import promstats
-import reqlog
-from llama_client import LlamaClient
-from slot_manager import GSlot, SlotManager
+from backend.llama_client import LlamaClient
+from backend.slot_manager import GSlot, SlotManager
+from cache import bin_cache
+from core import promstats
+from obs import reqlog
 
 from . import _state
 

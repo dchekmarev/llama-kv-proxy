@@ -9,7 +9,7 @@ import json
 import re
 
 import hashing as hs
-from config import WORDS_PER_BLOCK
+from core.config import WORDS_PER_BLOCK
 
 # Word tokens: one CJK ideograph, or a run of ASCII letters and digits.
 # Everything else -- punctuation such as the ":" of the "<role>:<content>"

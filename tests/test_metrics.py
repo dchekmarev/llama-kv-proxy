@@ -13,8 +13,8 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import app as app_module
-import metrics as pm
-from llama_client import LlamaClient
+from backend.llama_client import LlamaClient
+from obs import metrics as pm
 
 # --- relabel ---------------------------------------------------------------
 

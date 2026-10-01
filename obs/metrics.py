@@ -1,4 +1,4 @@
-# metrics.py
+# obs/metrics.py
 
 # -*- coding: utf-8 -*-
 
@@ -16,8 +16,8 @@ the remaining models are still reported.
 import asyncio
 import logging
 
-import promstats
-from llama_client import LlamaClient
+from backend.llama_client import LlamaClient
+from core import promstats
 
 log = logging.getLogger(__name__)
 

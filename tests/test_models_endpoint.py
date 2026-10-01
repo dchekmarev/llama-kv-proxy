@@ -5,7 +5,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import app as app_module
-from llama_client import LlamaClient
+from backend.llama_client import LlamaClient
 
 
 def make_client():

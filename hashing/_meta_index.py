@@ -1,4 +1,4 @@
-# meta_index.py
+# hashing/_meta_index.py
 
 """In-memory restore-candidate index (the "B+A" design).
 

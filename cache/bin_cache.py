@@ -1,4 +1,4 @@
-# bin_cache.py
+# cache/bin_cache.py
 
 """
 Direct filesystem cleanup of backend .bin cache files.
@@ -23,8 +23,8 @@ import logging
 import os
 import time
 
-import promstats
-from config import BIN_SAVE_GRACE_S, META_DIR
+from core import promstats
+from core.config import BIN_SAVE_GRACE_S, META_DIR
 
 log = logging.getLogger(__name__)
 

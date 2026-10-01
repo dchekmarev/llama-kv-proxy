@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import app as app_module
 import chat_flow
-import promstats
+from core import promstats
 
 # --- counter_sum -------------------------------------------------------------
 

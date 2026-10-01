@@ -12,8 +12,8 @@ import pytest
 
 import app as app_module
 import hashing as hs
-import slot_manager as sm_module
-from slot_manager import SlotManager
+from backend import slot_manager as sm_module
+from backend.slot_manager import SlotManager
 
 
 class FakeRequest:

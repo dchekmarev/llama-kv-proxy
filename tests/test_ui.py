@@ -11,10 +11,10 @@ import pytest
 
 import app as app_module
 import chat_flow
-import config
-import ui as ui_obs
-from request_id import request_id_var
-from ui import Registry, format_prompt, format_prompt_tail
+from core import config
+from core.request_id import request_id_var
+from obs import ui as ui_obs
+from obs.ui import Registry, format_prompt, format_prompt_tail
 
 # --- format_prompt -----------------------------------------------------------
 

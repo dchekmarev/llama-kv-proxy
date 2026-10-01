@@ -3,7 +3,7 @@
 """Stress harness for llama-kv-proxy (no real LLM).
 
 Spawns the fake backend (tests/fake_backend.py) and the real proxy
-(llama_kv_proxy.py) as subprocesses, then hammers the proxy with N threads
+(python -m app) as subprocesses, then hammers the proxy with N threads
 of chat requests (stream + non-stream, small + big) and verifies the proxy
 stays responsive and never leaks slots:
 
@@ -160,8 +160,9 @@ class Harness:
             }
         )
         self.px_proc = subprocess.Popen(
-            [sys.executable, os.path.join(ROOT, "llama_kv_proxy.py")],
+            [sys.executable, "-m", "app"],
             env=env,
+            cwd=ROOT,
             stdout=self.px_log,
             stderr=subprocess.STDOUT,
         )

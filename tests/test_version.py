@@ -4,7 +4,7 @@
 identify the running build."""
 
 import app as app_module
-from version import __version__
+from core.version import __version__
 
 
 async def test_version_endpoint():

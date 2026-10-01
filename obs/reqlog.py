@@ -1,4 +1,4 @@
-# reqlog.py
+# obs/reqlog.py
 
 """Request/response/prefix logging with group rotation.
 
@@ -34,7 +34,7 @@ import re
 import tempfile
 import time
 
-from config import REQUEST_LOG_DIR, REQUEST_LOG_MAX_GROUPS
+from core.config import REQUEST_LOG_DIR, REQUEST_LOG_MAX_GROUPS
 
 log = logging.getLogger(__name__)
 

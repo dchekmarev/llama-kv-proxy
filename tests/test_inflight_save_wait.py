@@ -26,8 +26,8 @@ import pytest
 
 import app as app_module
 import chat_flow
-import config
 import hashing as hs
+from core import config
 
 
 @pytest.fixture(autouse=True)

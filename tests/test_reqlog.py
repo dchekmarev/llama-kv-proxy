@@ -20,8 +20,8 @@ import pytest
 
 import app as app_module
 import chat_flow
-import reqlog
-from request_id import request_id_var
+from core.request_id import request_id_var
+from obs import reqlog
 
 
 class FakeRequest:

@@ -10,7 +10,7 @@ import pytest
 import app as app_module
 import chat_flow
 import hashing as hs
-from llama_client import RESTORE_MISSING
+from backend.llama_client import RESTORE_MISSING
 
 
 class FakeRequest:

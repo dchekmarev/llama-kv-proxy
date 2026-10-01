@@ -9,9 +9,9 @@ import logging
 from typing import Any, cast
 
 import app as app_pkg
-import bin_cache
 import hashing
-import promstats
+from cache import bin_cache
+from core import promstats
 
 log = logging.getLogger(__name__)
 

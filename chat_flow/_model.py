@@ -3,8 +3,8 @@
 """Effective-model resolution for a chat request."""
 
 import chat_flow
-from llama_client import LlamaClient
-from slot_manager import SlotManager
+from backend.llama_client import LlamaClient
+from backend.slot_manager import SlotManager
 
 from . import _state
 

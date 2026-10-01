@@ -1,4 +1,4 @@
-# llama_client.py
+# backend/llama_client.py
 
 """HTTP client for one llama.cpp backend (llama-server).
 
@@ -36,7 +36,7 @@ from typing import Any, Literal, overload
 
 import httpx
 
-import config
+from core import config
 
 log = logging.getLogger(__name__)
 
