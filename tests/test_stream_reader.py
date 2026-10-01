@@ -126,7 +126,13 @@ async def test_slot_released_when_client_disconnects(sm, no_meta, monkeypatch):
     await it.aclose()
 
     gc.collect()
-    await _pump(0.5)
+    # The reader's cleanup is scheduled work, so wait for the release instead
+    # of racing a fixed sleep (which CI machines can lose).
+    for _ in range(500):
+        if not lock.locked():
+            break
+        await _pump(0.01)
+    await _pump(0.05)
 
     assert not lock.locked(), "slot lock leaked after client disconnect"
     assert resp.closed

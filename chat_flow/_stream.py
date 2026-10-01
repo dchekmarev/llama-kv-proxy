@@ -22,6 +22,33 @@ from . import _state
 log = _state.log
 
 
+async def _bounded_put(
+    queue: asyncio.Queue[bytes | None],
+    item: bytes | None,
+    timeout: float,
+) -> bool:
+    """Put item within timeout, polling put_nowait so a cancellation arrives fast.
+
+    asyncio.wait_for(queue.put(...)) is cancellation-hostile on Python 3.11:
+    a wait_for that returns normally swallows a pending task.cancel() (the
+    timeout context uncancels it), so a client disconnect is not delivered
+    until some later await — meanwhile the reader keeps pushing to a full
+    queue and the slot lock stays held. Polling only suspends on plain
+    asyncio.sleep awaits, which a cancel interrupts immediately. Returns
+    False when the queue stays full until the deadline."""
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            queue.put_nowait(item)
+            return True
+        except asyncio.QueueFull:
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(min(0.01, max(0.0, deadline - loop.time())))
+
+
 async def start_stream_task(
     resp: httpx.Response,
     g: GSlot,
@@ -122,9 +149,9 @@ async def start_stream_task(
                 if ttft is None and t0 is not None:
                     ttft = time.monotonic() - t0
                     ui_obs.req_ttft(rid, ttft)
-                try:
-                    await asyncio.wait_for(queue.put(chunk), timeout=chat_flow.STREAM_PUT_TIMEOUT)
-                except TimeoutError:
+                if not await _bounded_put(
+                    queue, chunk, chat_flow.STREAM_PUT_TIMEOUT
+                ):
                     # Consumer gone (the queue is not drained): stop pushing
                     # and move on to cleanup. The stream was not read to the
                     # end, so the KV cache must not be saved. Signal the
@@ -208,22 +235,20 @@ async def start_stream_task(
             # would end silently (no [DONE], no error) and the client could
             # not distinguish a truncated stream from a normal one.
             if error_reason is not None:
-                try:
-                    payload = json.dumps(
-                        {"error": f"stream interrupted: {error_reason}"}
-                    )
-                    await asyncio.wait_for(
-                        queue.put(f"data: {payload}\n\n".encode()),
-                        timeout=chat_flow.STREAM_PUT_TIMEOUT,
-                    )
-                except Exception as push_err:  # noqa: BLE001
-                    # No consumer left (put timed out) or encoding failed:
-                    # nothing to signal; proceed to cleanup.
+                error_payload = json.dumps(
+                    {"error": f"stream interrupted: {error_reason}"}
+                )
+                if not await _bounded_put(
+                    queue,
+                    f"data: {error_payload}\n\n".encode(),
+                    chat_flow.STREAM_PUT_TIMEOUT,
+                ):
+                    # No consumer left (put timed out): nothing to signal;
+                    # proceed to cleanup.
                     log.warning(
-                        "stream_error_event_failed g=%s key=%s: %s",
+                        "stream_error_event_failed g=%s key=%s: consumer stalled",
                         g,
                         key[:16],
-                        push_err,
                     )
             # --- request group logging (response + raw SSE, always) ---
             # Fire-and-forget: logging must not delay the slot release or the
@@ -350,9 +375,7 @@ async def start_stream_task(
                     sm.release(g)
             # Sentinel with bounded wait: if there is no consumer, do not
             # block (the slot is already released).
-            try:
-                await asyncio.wait_for(queue.put(None), timeout=chat_flow.STREAM_PUT_TIMEOUT)
-            except TimeoutError:
+            if not await _bounded_put(queue, None, chat_flow.STREAM_PUT_TIMEOUT):
                 log.warning("stream_reader_sentinel_timeout g=%s key=%s", g, key[:16])
 
     reader_task = asyncio.create_task(reader())
