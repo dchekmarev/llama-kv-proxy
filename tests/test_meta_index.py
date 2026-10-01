@@ -423,6 +423,39 @@ async def test_lifespan_closes_clients_when_startup_fails(
 
 
 @pytest.mark.asyncio
+async def test_lifespan_closes_partial_clients_when_construction_fails(
+    meta_dir, index_on, monkeypatch
+):
+    """A client that fails to construct mid-list must not leak the ones already
+    built: the list has to be filled as it goes, not assigned at the end."""
+    created: list = []
+
+    def fake_client(url):
+        if len(created) == 2:
+            raise RuntimeError("bad backend url")
+        c = MagicMock()
+        c.close = AsyncMock()
+        created.append(c)
+        return c
+
+    monkeypatch.setattr(
+        app_module,
+        "BACKENDS",
+        [{"url": f"http://be{i}", "n_slots": 1} for i in range(3)],
+    )
+    monkeypatch.setattr(app_module, "LlamaClient", fake_client)
+    monkeypatch.setattr(app_module, "SlotManager", lambda: MagicMock())
+
+    with pytest.raises(RuntimeError, match="bad backend url"):
+        async with app_module.lifespan(app_module.app):
+            pass
+    assert len(created) == 2
+    assert [c.close.await_count for c in created] == [1, 1], (
+        "every constructed client must be closed on a startup failure"
+    )
+
+
+@pytest.mark.asyncio
 async def test_lifespan_no_index_when_disabled(meta_dir, fresh_index, monkeypatch):
     hs.write_meta("h_a2", "p", [], 100, "m1", prefix_hashes=["h_a1", "h_a2"])
     _mock_lifespan_deps(monkeypatch)

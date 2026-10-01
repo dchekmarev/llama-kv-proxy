@@ -30,7 +30,10 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     clients: list[LlamaClient] = []
     tasks: list[asyncio.Task[None]] = []
     try:
-        clients = [app_pkg.LlamaClient(be["url"]) for be in app_pkg.BACKENDS]
+        for be in app_pkg.BACKENDS:
+            # Appended one by one: a constructor that raises must not hide the
+            # clients already built from the finally below.
+            clients.append(app_pkg.LlamaClient(be["url"]))
         sm = app_pkg.SlotManager()
         sm.set_clients(clients)
         application.state.clients = clients
