@@ -132,8 +132,17 @@ class SlotManager:
         self._backend_slots[(backend_index, model)] = list(slots)
 
     def discovered_models(self) -> set[str]:
-        """Model ids that at least one backend reported slots for."""
-        return {model for _backend, model in self._pools}
+        """Model ids that at least one backend reported slots for.
+
+        A pool with no slots is not a discovered model: it would otherwise
+        disable the single-model fallback for every alias, and a pool is
+        created for any name that was freshened once.
+        """
+        return {
+            model
+            for (backend, model), slots in self._pools.items()
+            if slots or any(m == model for (b, m) in self._pools if b != backend)
+        }
 
     def has_pool(self, model: str) -> bool:
         """Whether any backend reported slots under this model id.

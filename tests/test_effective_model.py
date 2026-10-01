@@ -226,3 +226,67 @@ async def test_resolved_alias_keeps_cache_treatment(sm, caplog, monkeypatch):
     # is tracked under the real model id and not under the alias.
     assert all(m == "m1" for (_be, m) in sm._pools)
     assert not any(m == "default" for (_be, m) in sm._pools)
+
+
+@pytest.mark.asyncio
+async def test_unresolvable_alias_stays_uncached_on_every_request(
+    sm, monkeypatch, caplog
+):
+    """Two requests with the same unresolvable alias.
+
+    A plain backend reports its slots under whatever name it routes on, so the
+    on-demand freshen of the alias would register a pool for it -- and the next
+    request would take the alias for a real model id and cache under it. Two
+    detected models keep the single-model fallback out of the way, so the alias
+    really is unresolvable."""
+    client = sm.backends[0]["client"]
+    # A live backend: the freshen re-poll answers with its slot, as llama.cpp
+    # does, instead of the fixture's "no re-poll" (None).
+    client.get_slots = AsyncMock(return_value=[{"id": 0, "model": "m1"}])
+    app_module.app.state.sm = sm
+    app_module.app.state.clients = [client]
+    sm.set_backend_slots(0, "m1", [{"id": 0}, {"id": 1}])
+    sm.set_backend_slots(0, "m2", [{"id": 0}])
+
+    monkeypatch.setattr(chat_flow, "BIG_THRESHOLD_WORDS", 1)
+    save = AsyncMock()
+    monkeypatch.setattr(chat_flow, "_save_and_write_meta", save)
+
+    data = _small_data()
+    data["model"] = "default"
+    for _ in range(2):
+        with caplog.at_level("WARNING"):
+            await _chat(data)
+
+    # Unresolved on every request, not just the first one.
+    assert caplog.text.count("model_alias_unresolved") == 2
+    assert sm._last_saved == {}, "nothing may be saved under the alias"
+    save.assert_not_awaited()
+    # The alias never becomes a pool, so it can never be mistaken for a model.
+    assert not any(m == "default" for (_be, m) in sm._pools)
+    assert sm.discovered_models() == {"m1", "m2"}
+
+
+@pytest.mark.asyncio
+async def test_cache_prompt_false_still_freshens(sm, monkeypatch):
+    """cache_prompt: false is not the same as an unresolved alias: the name is
+    real, only the reuse is off, so the on-demand slot refresh must still run
+    (a stale slot_id wraps onto a live physical slot)."""
+    client = sm.backends[0]["client"]
+    client.get_slots = AsyncMock(return_value=[{"id": 0, "model": "m1"}])
+    app_module.app.state.sm = sm
+    app_module.app.state.clients = [client]
+    sm.set_backend_slots(0, "m1", [{"id": 0}, {"id": 1}])
+
+    monkeypatch.setattr(chat_flow, "BIG_THRESHOLD_WORDS", 1)
+    save = AsyncMock()
+    monkeypatch.setattr(chat_flow, "_save_and_write_meta", save)
+
+    data = _small_data()
+    data["model"] = "m1"
+    data["cache_prompt"] = False
+    await _chat(data)
+
+    client.get_slots.assert_awaited()
+    assert client.chat_completions.await_args.args[0]["model"] == "m1"
+    save.assert_not_awaited()

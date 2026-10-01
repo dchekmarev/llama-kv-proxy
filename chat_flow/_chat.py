@@ -107,7 +107,15 @@ async def chat_flow(
     # the backend is otherwise only seen at the next periodic poll, and a stale
     # slot_id wraps onto a live physical slot (id % n_slots), risking a save/
     # restore collision. Rate-limited and non-fatal inside freshen_model.
-    await sm.freshen_model(effective_model)
+    # Skip only for an alias that could not be resolved (chat_flow._model): the
+    # name is proxied as-is without cache treatment, and refreshing it would
+    # register a slot pool under the client's string, so the next request would
+    # take the alias for a real model id and cache under it. A cache_prompt:false
+    # request is a different case -- its name is real, only the reuse is off --
+    # so it still refreshes, keeping the stale-slot_id guarantee.
+    unresolved_alias = no_cache and client_model == effective_model
+    if not unresolved_alias:
+        await sm.freshen_model(effective_model)
     t_acq = time.monotonic()
     try:
         try:
