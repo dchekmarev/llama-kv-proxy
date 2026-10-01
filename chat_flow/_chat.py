@@ -81,7 +81,7 @@ async def chat_flow(
 
     def _req_outcome(outcome: str) -> None:
         promstats.requests_total.labels(
-            model=effective_model, stream="true" if stream else "false", outcome=outcome
+            model=metric_model, stream="true" if stream else "false", outcome=outcome
         ).inc()
 
     decision: dict = chat_flow_pkg._new_decision(
@@ -114,6 +114,10 @@ async def chat_flow(
     # request is a different case -- its name is real, only the reuse is off --
     # so it still refreshes, keeping the stale-slot_id guarantee.
     unresolved_alias = no_cache and client_model == effective_model
+    # The metric label must stay a bounded set: a name the proxy could not
+    # resolve is the client's own string, and every distinct value would mint a
+    # permanent time series. The backend still receives the name it asked for.
+    metric_model = promstats.UNRESOLVED_LABEL if unresolved_alias else effective_model
     if not unresolved_alias:
         await sm.freshen_model(effective_model)
     t_acq = time.monotonic()
@@ -134,7 +138,7 @@ async def chat_flow(
                 restore_key[:16] if restore_key else None,
             )
             promstats.requests_total.labels(
-                model=effective_model, stream="true" if stream else "false",
+                model=metric_model, stream="true" if stream else "false",
                 outcome="acquire_timeout",
             ).inc()
             ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error="acquire_timeout")
@@ -154,7 +158,7 @@ async def chat_flow(
     #   cancellation): the finally at the end of this function.
     task_owns_slot = False
     try:
-        promstats.slot_wait_seconds.labels(model=effective_model).observe(
+        promstats.slot_wait_seconds.labels(model=metric_model).observe(
             time.monotonic() - t_acq
         )
 
@@ -206,7 +210,7 @@ async def chat_flow(
                 err_txt = await resp.aread()
                 await resp.aclose()
                 promstats.requests_total.labels(
-                    model=effective_model, stream="true", outcome="error"
+                    model=metric_model, stream="true", outcome="error"
                 ).inc()
                 ui_obs.req_end(
                     rid,
@@ -235,6 +239,7 @@ async def chat_flow(
                 decision,
                 render_ctx=render_ctx,
                 t0=t0_mono,
+                metric_model=metric_model,
             )
             task_owns_slot = True
 
@@ -349,13 +354,13 @@ async def chat_flow(
 
             # Non-stream: the whole answer arrived at once, so the time to
             # first token equals the total duration.
-            chat_flow_pkg._record_tokens(effective_model, out.get("usage"))
+            chat_flow_pkg._record_tokens(metric_model, out.get("usage"))
             dur = time.monotonic() - t0_mono
             promstats.request_duration_seconds.labels(
-                model=effective_model, stream="false"
+                model=metric_model, stream="false"
             ).observe(dur)
             promstats.ttft_seconds.labels(
-                model=effective_model, stream="false"
+                model=metric_model, stream="false"
             ).observe(dur)
             _req_outcome("ok")
             log.info(

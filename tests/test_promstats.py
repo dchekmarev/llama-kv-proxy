@@ -12,6 +12,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import app as app_module
+import chat_flow
 import promstats
 
 # --- counter_sum -------------------------------------------------------------
@@ -130,3 +131,51 @@ async def test_metrics_endpoint_model_filter_applies_to_proxy_metrics():
     body = resp.body.decode()
     assert 'model="m2"' in body
     assert 'model="m1"' not in body
+
+
+class _req:
+    """Minimal stand-in for the Starlette request object chat() reads."""
+
+    def __init__(self, data):
+        self._data = data
+
+    async def json(self):
+        return self._data
+
+
+def test_model_label_rejects_unusable_names():
+    """model_label is the syntactic guard: a name with whitespace, control
+    characters, or an absurd length is not a model id and must not become a
+    label."""
+    assert promstats.model_label("llama-3.1-70b") == "llama-3.1-70b"
+    assert promstats.model_label("Qwen/Qwen2.5-7B-Instruct") == "Qwen/Qwen2.5-7B-Instruct"
+    for junk in ("a" * 200, "weird name", "", "\x00evil", "new\nline", "tab\there"):
+        assert promstats.model_label(junk) == promstats.UNRESOLVED_LABEL, junk
+
+
+async def test_unresolved_alias_does_not_create_a_label_series(sm, monkeypatch):
+    """End to end: an alias the proxy could not resolve is counted under the
+    fixed bucket, whatever the client sent -- including a short, perfectly
+    well-formed name, which the syntactic guard alone would let through."""
+    client = sm.backends[0]["client"]
+    client.get_slots = AsyncMock(return_value=[{"id": 0, "model": "m1"}])
+    app_module.app.state.sm = sm
+    app_module.app.state.clients = [client]
+    sm.set_backend_slots(0, "m1", [{"id": 0}])
+    sm.set_backend_slots(0, "m2", [{"id": 0}])
+
+    monkeypatch.setattr(chat_flow, "BIG_THRESHOLD_WORDS", 1)
+    monkeypatch.setattr(chat_flow, "_save_and_write_meta", AsyncMock(return_value=True))
+
+    data = {
+        "messages": [{"role": "user", "content": "hello world"}],
+        "stream": False,
+        "model": "default",
+    }
+    await app_module.chat(_req(data))
+
+    body = promstats.render()
+    assert f'model="{promstats.UNRESOLVED_LABEL}"' in body
+    assert 'model="default"' not in body, (
+        "an unresolved alias must not get its own metric series"
+    )

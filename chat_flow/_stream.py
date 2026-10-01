@@ -39,9 +39,15 @@ async def start_stream_task(
     decision: dict | None = None,
     render_ctx: dict | None = None,
     t0: float | None = None,
+    metric_model: str | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """t0: the request start (time.monotonic); when given, the reader records
-    the request duration, TTFT, outcome and token metrics in its finally."""
+    the request duration, TTFT, outcome and token metrics in its finally.
+
+    metric_model: the bounded label for the model metrics. Defaults to model_id,
+    which is only safe when the caller knows the name resolved to a real model
+    id; an unresolved client alias must pass the fixed bucket instead."""
+    label = promstats.model_label(metric_model or model_id)
     queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=chat_flow.STREAM_QUEUE_SIZE)
 
     async def reader():
@@ -187,16 +193,16 @@ async def start_stream_task(
                 else:
                     outcome = "ok"
                 promstats.requests_total.labels(
-                    model=model_id, stream="true", outcome=outcome
+                    model=label, stream="true", outcome=outcome
                 ).inc()
                 promstats.request_duration_seconds.labels(
-                    model=model_id, stream="true"
+                    model=label, stream="true"
                 ).observe(time.monotonic() - t0)
                 if ttft is not None:
                     promstats.ttft_seconds.labels(
-                        model=model_id, stream="true"
+                        model=label, stream="true"
                     ).observe(ttft)
-                chat_flow._record_tokens(model_id, stream_usage)
+                chat_flow._record_tokens(label, stream_usage)
             # Signal the mid-stream failure to the client exactly once (single
             # push site, guarded by error_reason): without this the stream
             # would end silently (no [DONE], no error) and the client could

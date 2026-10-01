@@ -9,7 +9,11 @@ two halves of the scrape never collide.
 
 Label cardinality is bounded by design: model, backend index, stream flag,
 outcome, tier, reason and state are all small fixed sets. Request ids and
-cache keys never appear in labels.
+cache keys never appear in labels. The model label goes through
+model_label(), because a client may send any string as `model` and a name
+that does not resolve to a real model id would otherwise become a new time
+series per request -- unbounded series that never expire, growing /metrics
+and its memory with every distinct name a client invents.
 """
 
 import glob
@@ -29,6 +33,31 @@ from config import BIN_CACHE_DIR, META_DIR
 REGISTRY = CollectorRegistry()
 
 P = "llama_kv_proxy"
+
+# The bucket a model name lands in when the proxy could not resolve it to a
+# real model id. Every such request is counted here, so the label set stays
+# bounded no matter what the client sends.
+UNRESOLVED_LABEL = "unresolved"
+
+# A model id as the backend reports it: no whitespace, no control characters,
+# bounded length. Anything else is a name the proxy could not resolve.
+_LABEL_SAFE_RE = re.compile(r"\A[\w.:/+-]{1,64}\Z", re.ASCII)
+_LABEL_UNSAFE_RE = re.compile(r"[\s\x00-\x1f\x7f]")
+
+
+def model_label(name: str) -> str:
+    """The `model` label value for a name.
+
+    A resolved model id is passed through. A client-supplied name that is not a
+    real model id (an alias the proxy could not map, or a junk string) is
+    replaced by UNRESOLVED_LABEL: a Prometheus label is a permanent time
+    series, so a client could otherwise mint an unbounded number of them just
+    by varying the `model` field of its requests.
+    """
+    if not name or _LABEL_UNSAFE_RE.search(name) or not _LABEL_SAFE_RE.match(name):
+        return UNRESOLVED_LABEL
+    return name
+
 
 REQUEST_BUCKETS = (0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600)
 TTFT_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30)

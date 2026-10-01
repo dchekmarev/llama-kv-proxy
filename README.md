@@ -233,7 +233,7 @@ All parameters are environment variables; defaults in parentheses.
 | `llama_kv_proxy_inflight_save_waits_total` | counter | `model`, `result` | Continuations that waited for an in-flight save: `hit` / `miss`. |
 | `llama_kv_proxy_backend_scrape_failures_total` | counter | `backend` | Backend `/metrics` scrape failures. |
 
-Label cardinality is bounded by design: `model`, `backend`, `stream`, `outcome`, `tier`, `reason` and `state` are small fixed sets; request ids and cache keys never appear in labels.
+Label cardinality is bounded by design: `model`, `backend`, `stream`, `outcome`, `tier`, `reason` and `state` are small fixed sets; request ids and cache keys never appear in labels. A `model` the proxy could not resolve to a real model id is counted under `model="unresolved"` rather than under the client's own string, so a client cannot mint a new time series per request by varying that field.
 
 ## Project structure
 
