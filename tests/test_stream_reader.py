@@ -569,3 +569,48 @@ async def test_put_timeout_does_not_save_partial_stream(sm, monkeypatch):
     assert not lock.locked(), "slot must be released when the consumer vanished"
     assert resp.closed
     write_meta_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_at_aclose_ends_ui_request(sm, monkeypatch):
+    """A client disconnect that cancels the reader exactly inside resp.aclose()
+    must still close the dashboard entry.
+
+    req_end sits after the aclose, so a cancel delivered in that window skipped
+    it: the slot was released, but registry.active kept the request forever --
+    a permanently "generating" row and a busy_rid painted on a free slot."""
+    import hashing
+    import ui
+
+    rid = "rid-aclose-cancel"
+    monkeypatch.setattr(hashing, "write_meta_async", AsyncMock())
+    ui.req_start(
+        rid,
+        model="model",
+        stream=True,
+        n_words=3,
+        is_big=True,
+        key="k" * 16,
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert rid in ui.registry.active
+
+    g = (0, "model", 0)
+    lock = await _acquire(sm, g)
+    resp = BlockingAcloseResp([b"a", b"b", b"c"])
+
+    gen = await chat_flow.start_stream_task(
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True, rid=rid
+    )
+    it = gen.__aiter__()
+    for _ in range(3):
+        await it.__anext__()
+    await asyncio.wait_for(resp.in_aclose.wait(), timeout=2.0)
+
+    await it.aclose()
+    await _pump(0.5)
+
+    assert rid not in ui.registry.active, (
+        "the request must leave the active set on a disconnect at aclose"
+    )
+    assert not lock.locked()

@@ -314,18 +314,14 @@ async def start_stream_task(
                 if decision is not None:
                     decision["save"] = {"attempted": False}
                     chat_flow._emit_decision(decision, rid, ts)
-            try:
-                try:
-                    await resp.aclose()
-                except Exception:  # noqa: BLE001, S110
-                    pass
-            finally:
-                if not handed_off:
-                    log.info("slot_release g=%s key=%s via=stream", g, key[:16])
-                    sm.release(g)
             # The client has received everything (or the stream failed): the
             # request is over from the dashboard's point of view, even when a
             # big-completed stream hands the slot to a background save.
+            # Recorded before aclose: a disconnect cancels the reader inside
+            # that await, and req_end below it would be skipped, leaving the
+            # request active forever (a stuck "generating" row, a busy_rid on a
+            # free slot). It is synchronous and pops by rid, so it is safe here
+            # and exactly-once.
             ui_obs.req_end(
                 rid,
                 status=(
@@ -337,6 +333,15 @@ async def start_stream_task(
                 ),
                 error=error_reason,
             )
+            try:
+                try:
+                    await resp.aclose()
+                except Exception:  # noqa: BLE001, S110
+                    pass
+            finally:
+                if not handed_off:
+                    log.info("slot_release g=%s key=%s via=stream", g, key[:16])
+                    sm.release(g)
             # Sentinel with bounded wait: if there is no consumer, do not
             # block (the slot is already released).
             try:
