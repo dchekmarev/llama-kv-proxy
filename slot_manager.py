@@ -409,6 +409,18 @@ class SlotManager:
         self._last_saved[g] = key
         return True
 
+    def forget_saved(self, g: GSlot, key: str) -> None:
+        """Drop the record of what a slot holds, after that cache was discarded.
+
+        save_after records the key and refreshes the LRU mark, but the caller
+        may still throw the capture away (an empty .bin, say). The slot then
+        holds no cacheable conversation, so the mark must not survive: it would
+        keep the slot's LRU position fresh for a cache that does not exist, and
+        a later no-op-restore decision would be made on a key with no meta.
+        """
+        if self._last_saved.get(g) == key:
+            self._last_saved.pop(g, None)
+
     async def freshen_model(self, model: str) -> bool:
         """Re-poll the slots of one model, at most once per interval.
 

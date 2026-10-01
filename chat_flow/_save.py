@@ -73,6 +73,8 @@ async def _save_and_write_meta(
                     "save_empty_capture g=%s key=%s bin_delete_failed", g, key[:16], exc_info=True
                 )
             promstats.saves_total.labels(model=model_id, outcome="empty_capture").inc()
+            # save_after already recorded this key; the capture is gone now.
+            sm.forget_saved(g, key)
             chat_flow._set_save_outcome(decision, success=False, phase="empty_capture", bin_size_bytes=bin_size)
             return False
         meta_written = False

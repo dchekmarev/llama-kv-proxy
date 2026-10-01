@@ -157,3 +157,42 @@ async def test_discards_empty_capture_and_keeps_subsumed(meta_dir, monkeypatch):
     delete_mock.assert_not_awaited()
     del_bin_mock.assert_called_once()
     assert (meta_dir / "h_ab.meta.json").exists(), "subsumed meta must be kept"
+
+
+async def test_empty_capture_clears_the_saved_key(meta_dir, monkeypatch):
+    """The .bin was just deleted, so the slot holds no cacheable conversation.
+
+    save_after had already recorded the key and refreshed the LRU mark before
+    the size check threw the capture away, leaving the slot marked as holding a
+    cache that does not exist: its LRU position was refreshed for nothing, and
+    a later no-op-restore decision would be taken on a key with no meta."""
+    _write_prefix("h_ab", ["h_a", "h_ab"])
+
+    # A real SlotManager: the state under test is its _last_saved record.
+    from slot_manager import SlotManager
+
+    sm = SlotManager()
+    client = MagicMock()
+    client.save_slot = AsyncMock(return_value=True)
+    sm.set_clients([client])
+    g = (0, "m1", 0)
+    monkeypatch.setattr(hs, "write_meta_async", AsyncMock())
+    monkeypatch.setattr(hs, "delete_subsumed_metas_async", AsyncMock())
+    monkeypatch.setattr(chat_flow, "_schedule_lru_check", lambda: None)
+    monkeypatch.setattr(chat_flow, "_purge_backend_files", AsyncMock())
+    monkeypatch.setattr(chat_flow, "BIN_CACHE_DIR", "/tmp/bin")
+    monkeypatch.setattr(bin_cache, "get_bin_size", lambda d, k: 1200)
+    monkeypatch.setattr(bin_cache, "delete_bin_file", MagicMock())
+
+    # The slot really did hold this conversation before the capture.
+    assert await sm.save_after(g, "h_abc") is True
+    assert sm._last_saved[g] == "h_abc"
+
+    ok = await chat_flow._save_and_write_meta(
+        [], sm, g, "h_abc", "p", [], ["h_a", "h_ab", "h_abc"], "m1"
+    )
+
+    assert ok is False
+    assert g not in sm._last_saved, (
+        "a discarded capture must not leave the slot marked as holding it"
+    )
