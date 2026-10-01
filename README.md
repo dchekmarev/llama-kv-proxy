@@ -83,10 +83,18 @@ The proxy forwards the client's request body to the backend verbatim (pass-throu
 1) Start llama.cpp (https://github.com/ggml-org/llama.cpp) with slots and a cache directory:
 
 ```bash
-llama-server -m ./model.gguf -np 4 --slot-save-path /var/lib/llama-slots --host 0.0.0.0 --port 8080 --swa-full
+llama-server -m ./model.gguf -np 4 --slot-save-path /var/lib/llama-slots --host 0.0.0.0 --port 8080
 ```
 
 This enables the OpenAI-compatible HTTP server, a pool of 4 slots, and a directory where slot KV caches are saved and restored by basename.
+
+`--swa-full` is **not** part of that command. It is a separate, model-dependent flag you should add only for sliding-window-attention models (Gemma and similar):
+
+```bash
+llama-server -m ./gemma.gguf -np 4 --slot-save-path /var/lib/llama-slots --host 0.0.0.0 --port 8080 --swa-full
+```
+
+Without it, the SWA layers keep a cache of only `n_swa` cells, i.e. the last window, so restoring a long saved prefix buys you nothing in those layers and the cache hits this proxy reports are not backed by real reuse. With it, the SWA layers get a full `n_ctx` cache, which costs extra VRAM. It is a no-op for non-SWA models — llama.cpp selects a plain KV cache there, whose constructor takes no `swa_full` — so it is safe to omit unless your model is SWA. If you change the flag, delete the old files in `--slot-save-path` first: the saved state is tied to the cache layout.
 
 2) Run the proxy next to it:
 
