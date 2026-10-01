@@ -203,7 +203,7 @@ All parameters are environment variables; defaults in parentheses.
 | GET | `/proxy/ui/` | Live dashboard (self-contained HTML page): active requests with live token tails, recent history, slot grid. |
 | GET | `/proxy/ui/state` | JSON snapshot: active requests (with token tails), history, slots with `busy_rid`. |
 | GET | `/proxy/ui/request/{rid}` | Full prompt transcript of an in-flight or recent (history) request. |
-| GET | `/proxy/ui/events` | SSE stream for the dashboard: initial snapshot, then token batches and start/slot/end events (15 s heartbeat). |
+| GET | `/proxy/ui/events` | SSE stream for the dashboard: initial snapshot, then token batches and start/slot/end events (idle stream stays open without heartbeat frames; the page also polls `/proxy/ui/state`). |
 | GET | `/cache/stats` | Cache file count, total size, hit/miss counters. |
 | POST | `/cache/clear` | Delete all local meta files (and best-effort purge backend `.bin` files). |
 | GET | `/metrics` | Prometheus target: proxy `llama_kv_proxy_*` metrics followed by the merged backend `/metrics` across all active (loaded) models, each backend metric carrying `model` and `backend` labels. `?model=X` filters both halves to a single model; a down backend/model is skipped, never failing the scrape. |
@@ -269,7 +269,7 @@ python3 -m pytest tests/ -q   # run the test suite
 ruff check .                  # lint
 python3 -m mypy app/ chat_flow/ config.py logging_setup.py slot_manager.py \
   llama_client.py hashing/ bin_cache.py metrics.py request_id.py version.py \
-  llama_kv_proxy.py
+  llama_kv_proxy.py meta_index.py promstats.py reqlog.py ui.py ui_page.py
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same checks (ruff, mypy, pytest) on every push and pull request.

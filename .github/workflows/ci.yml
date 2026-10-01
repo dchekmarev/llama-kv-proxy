@@ -28,7 +28,8 @@ jobs:
         run: |
           python -m mypy app/ chat_flow/ config.py logging_setup.py \
             slot_manager.py llama_client.py hashing/ bin_cache.py metrics.py \
-            request_id.py version.py llama_kv_proxy.py
+            request_id.py version.py llama_kv_proxy.py meta_index.py \
+            promstats.py reqlog.py ui.py ui_page.py
 
       - name: Test (pytest)
         run: python -m pytest tests/ -q
