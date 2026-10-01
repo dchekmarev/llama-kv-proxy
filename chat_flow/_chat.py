@@ -84,6 +84,19 @@ async def chat_flow(
             model=metric_model, stream="true" if stream else "false", outcome=outcome
         ).inc()
 
+    def _observe_latency() -> None:
+        """Record duration/TTFT for a request that ends in a JSON error.
+
+        These histograms used to be observed on the success path only, so every
+        5xx was missing from them: a rate() over the duration under-reported
+        failures, and a proxy that failed fast looked faster than one that
+        succeeded slowly. No TTFT is recorded for an error -- no token was
+        produced -- so only the duration goes in.
+        """
+        promstats.request_duration_seconds.labels(
+            model=metric_model, stream="true" if stream else "false"
+        ).observe(time.monotonic() - t0_mono)
+
     decision: dict = chat_flow_pkg._new_decision(
         is_big, no_cache, n_words, effective_model, render_ctx
     )
@@ -142,6 +155,7 @@ async def chat_flow(
                 outcome="acquire_timeout",
             ).inc()
             ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error="acquire_timeout")
+            _observe_latency()
             return JSONResponse(
                 {"error": "all slots busy, please retry later"},
                 status_code=503,
@@ -217,6 +231,7 @@ async def chat_flow(
                     status=ui_obs.STATUS_ERROR,
                     error=f"backend {resp.status_code}",
                 )
+                _observe_latency()
                 return JSONResponse(
                     {"error": err_txt.decode("utf-8", "ignore")},
                     status_code=chat_flow_pkg._provider_error_status(resp.status_code),
@@ -263,6 +278,7 @@ async def chat_flow(
                 _req_outcome("error")
                 ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR,
                               error="provider non-JSON body")
+                _observe_latency()
                 return JSONResponse(
                     {"error": "provider non-JSON body"},
                     status_code=502,
@@ -283,6 +299,7 @@ async def chat_flow(
                 _req_outcome("error")
                 ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR,
                               error=str(out.get("message") or "provider error"))
+                _observe_latency()
                 return JSONResponse(
                     body,
                     status_code=chat_flow_pkg._provider_error_status(out.get("status")),
@@ -379,11 +396,13 @@ async def chat_flow(
         log.exception("chat_upstream_error g=%s key=%s", g, key[:16])
         _req_outcome("error")
         ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error=str(e))
+        _observe_latency()
         return JSONResponse({"error": str(e)}, status_code=502)
     except Exception as e:
         log.exception("chat_error g=%s key=%s", g, key[:16])
         _req_outcome("error")
         ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error=str(e))
+        _observe_latency()
         return JSONResponse({"error": str(e)}, status_code=500)
     finally:
         if not task_owns_slot:

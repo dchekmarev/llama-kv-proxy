@@ -179,3 +179,29 @@ async def test_unresolved_alias_does_not_create_a_label_series(sm, monkeypatch):
     assert 'model="default"' not in body, (
         "an unresolved alias must not get its own metric series"
     )
+
+
+async def test_error_responses_are_observed_in_the_histograms(sm, monkeypatch):
+    """A failed request is a request: its latency must reach the histograms.
+
+    They were only observed on the success path, so a rate() or
+    histogram_quantile() over them silently under-reported every 5xx, and a
+    proxy that failed fast looked faster than one that succeeded slowly."""
+    client = sm.backends[0]["client"]
+    client.chat_completions = AsyncMock(return_value={"object": "error", "message": "nope"})
+    app_module.app.state.sm = sm
+    app_module.app.state.clients = [client]
+    sm.set_backend_slots(0, "m1", [{"id": 0}])
+
+    monkeypatch.setattr(chat_flow, "BIG_THRESHOLD_WORDS", 1)
+    resp = await app_module.chat(
+        _req({"messages": [{"role": "user", "content": "hi"}], "stream": False})
+    )
+    assert resp.status_code >= 500
+
+    body = promstats.render()
+    # The error request is counted, i.e. the histogram has an observation.
+    assert (
+        'llama_kv_proxy_request_duration_seconds_count{model="m1",stream="false"} 1.0'
+        in body
+    )
