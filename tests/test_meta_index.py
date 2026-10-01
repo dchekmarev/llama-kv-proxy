@@ -390,6 +390,39 @@ async def test_lifespan_starts_reconcile_task_when_enabled(meta_dir, index_on, m
 
 
 @pytest.mark.asyncio
+async def test_lifespan_closes_clients_when_startup_fails(
+    meta_dir, index_on, monkeypatch
+):
+    """A failure during startup must still close the backend clients: a start
+    that dies after the clients exist must not leak their sockets."""
+    created: list = []
+
+    def fake_client(url):
+        c = MagicMock()
+        c.close = AsyncMock()
+        created.append(c)
+        return c
+
+    monkeypatch.setattr(app_module, "BACKENDS", [{"url": "http://be", "n_slots": 1}])
+    monkeypatch.setattr(app_module, "LlamaClient", fake_client)
+    monkeypatch.setattr(app_module, "SlotManager", lambda: MagicMock())
+    monkeypatch.setattr(app_module, "META_INDEX_ENABLED", True)
+    monkeypatch.setattr(app_module, "META_INDEX_RECONCILE_INTERVAL_S", 0)
+
+    async def boom():
+        raise OSError("meta dir unreadable")
+
+    monkeypatch.setattr(hs, "rebuild_index_async", boom)
+
+    with pytest.raises(OSError, match="meta dir unreadable"):
+        async with app_module.lifespan(app_module.app):
+            pass
+    assert len(created) == 1, "startup must have created the client first"
+    assert created[0].close.await_count == 1, "the client must be closed on failure"
+    assert app_module._meta_index_reconcile_task is None
+
+
+@pytest.mark.asyncio
 async def test_lifespan_no_index_when_disabled(meta_dir, fresh_index, monkeypatch):
     hs.write_meta("h_a2", "p", [], 100, "m1", prefix_hashes=["h_a1", "h_a2"])
     _mock_lifespan_deps(monkeypatch)
