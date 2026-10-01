@@ -6,8 +6,15 @@ build-backend = "setuptools.build_meta"
 name = "llama-kv-proxy"
 description = "OpenAI-compatible proxy that restores llama.cpp KV cache slots by conversation prefix"
 requires-python = ">=3.11"
-# Runtime dependencies are pinned in requirements.txt (used by the Dockerfile).
-dependencies = []
+# Runtime dependencies. The exact pins live in requirements.txt (the lock the
+# Dockerfile and CI install); these are the floors declared by the code, so a
+# bare `pip install .` is self-sufficient.
+dependencies = [
+    "fastapi>=0.121.0",
+    "httpx>=0.28.1",
+    "prometheus-client>=0.26.0",
+    "uvicorn>=0.38.0",
+]
 
 # Single source of truth for the version: version.py.
 dynamic = ["version"]
@@ -25,6 +32,7 @@ py-modules = [
     "config",
     "llama_client",
     "llama_kv_proxy",
+    "logging_setup",
     "meta_index",
     "metrics",
     "promstats",
