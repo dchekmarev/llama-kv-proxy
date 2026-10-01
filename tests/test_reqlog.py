@@ -268,3 +268,16 @@ async def test_write_path_rotates_to_max_groups(reqlog_dir, monkeypatch):
         "1001.r1": {"request"},
         "1002.r2": {"request"},
     }
+
+
+async def test_write_path_rotates_ids_with_dots(reqlog_dir, monkeypatch):
+    """A request id may contain dots and colons (sanitize_request_id allows
+    them), so rotation must still see the group."""
+    monkeypatch.setattr(reqlog, "REQUEST_LOG_MAX_GROUPS", 2)
+    for i, rid in enumerate(["a.b", "c:d", "e.f.g"]):
+        reqlog.log_file("request", rid, str(1000 + i), {"i": i})
+    await _drain()
+    assert _groups(reqlog_dir) == {
+        "1001.c:d": {"request"},
+        "1002.e.f.g": {"request"},
+    }

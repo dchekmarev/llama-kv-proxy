@@ -39,7 +39,9 @@ from config import REQUEST_LOG_DIR, REQUEST_LOG_MAX_GROUPS
 log = logging.getLogger(__name__)
 
 # {timestamp_ms}.{request_id}.{type}.json — the group is the ts.rid prefix.
-_GROUP_RE = re.compile(r"^(\d+)\.([^.]+)\.(request|response|prefix|raw|decision)\.json$")
+# A request id may contain dots and colons (see request_id.sanitize_request_id),
+# so it is anchored by the trailing type suffix instead of being dot-free.
+_GROUP_RE = re.compile(r"^(\d+)\.(.+)\.(request|response|prefix|raw|decision)\.json$")
 
 # Strong references to in-flight log-write tasks (the event loop keeps only
 # weak references; without this a task could be GC-collected before it runs
