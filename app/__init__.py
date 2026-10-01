@@ -10,7 +10,7 @@ pass-through: /slots, /health, /tokenize, /completion, ... reach the backend):
 - GET  /proxy/health        per-backend probe + slot state
 - GET  /proxy/slots         the discovered slot pools
 - GET  /cache/stats         meta cache files/bytes/hits/misses
-- GET,POST /cache/clear     drop the whole cache (metas + backend .bin)
+- POST /cache/clear       drop the whole cache (metas + backend .bin)
 - GET  /metrics             Prometheus text (proxy registry + backends)
 - GET  /version             build identifier
 - GET  /proxy/ui[/]         the live dashboard (page, state, request, events)

@@ -154,7 +154,7 @@ async def cache_stats() -> dict[str, Any]:
     return await asyncio.to_thread(hashing.cache_stats)
 
 
-@app_pkg.app.api_route("/cache/clear", methods=["GET", "POST"])
+@app_pkg.app.post("/cache/clear")
 async def cache_clear() -> dict[str, Any]:
     """Drop the whole cache: meta files, backend .bin files, and counters.
 

@@ -315,3 +315,17 @@ async def test_cache_clear_removes_orphan_bin_files(sm, meta_dir, tmp_path, monk
     await app_module.cache_clear()
 
     assert not (bin_dir / "orphan").exists()
+
+
+def test_cache_clear_is_post_only():
+    """A state-mutating GET is triggerable by any page the browser visits, and
+    the proxy has no auth: keep /cache/clear POST-only."""
+    routes = [
+        r
+        for r in app_module.app.routes
+        if getattr(r, "path", None) == "/cache/clear"
+    ]
+    assert routes, "/cache/clear must stay registered"
+    assert all(r.methods == {"POST"} for r in routes), (
+        f"/cache/clear must accept POST only, got {[r.methods for r in routes]}"
+    )

@@ -252,6 +252,9 @@ Label cardinality is bounded by design: `model`, `backend`, `stream`, `outcome`,
 | `promstats.py` | Proxy-level `llama_kv_proxy_*` metrics (dedicated registry) and storage gauges |
 | `request_id.py` | Per-request correlation id (ContextVar + log filter) |
 | `reqlog.py` | Request/response/prefix JSON logging with group rotation |
+| `meta_index.py` | In-RAM index over the on-disk meta files (search, TTL, write/delete) |
+| `ui.py` | Live request registry and the dashboard's event stream |
+| `ui_page.py` | The dashboard HTML |
 | `version.py` | Single source of truth for the proxy version |
 | `pyproject.toml` | Project metadata; reads the version from `version.py` |
 | `tests/` | pytest suite |
@@ -274,7 +277,7 @@ CI (`.github/workflows/ci.yml`) runs the same checks (ruff, mypy, pytest) on eve
 
 ## Security
 
-The proxy has **no authentication**. Anyone who can reach the port can read and send chat requests, wipe the cache (`POST /cache/clear`), consume all slots, read the live dashboard (which serves prompt transcripts of recent requests), and reach every native llama.cpp endpoint through the pass-through.
+The proxy has **no authentication**. Anyone who can reach the port can read and send chat requests, wipe the cache (`POST /cache/clear` — POST only, never a GET, so a page cannot trigger it), consume all slots, read the live dashboard (which serves prompt transcripts of recent requests), and reach every native llama.cpp endpoint through the pass-through.
 
 Run it on a trusted network (single host, private LAN, tailnet) or behind an authenticating reverse proxy. Before exposing the port further:
 
