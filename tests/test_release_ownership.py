@@ -72,6 +72,40 @@ async def test_cancellation_releases_slot(sm, meta_dir):
 
 
 @pytest.mark.asyncio
+async def test_pre_dispatch_failure_releases_slot(sm, meta_dir, monkeypatch):
+    """A failure between acquiring the slot and dispatching must still release
+    it: the pre-dispatch steps (slot snapshot, restore settle) are backend
+    calls and can fail or time out."""
+    import chat_flow
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("backend down")
+
+    monkeypatch.setattr(chat_flow, "_settle_restore", boom)
+    resp = await _chat(sm, "small")
+    assert resp.status_code == 500
+    _assert_all_free(sm)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_settle_releases_slot(sm, meta_dir, monkeypatch):
+    """A request cancelled while settling the restore must release the slot."""
+
+    async def slow_settle(*args, **kwargs):
+        await asyncio.sleep(10)
+
+    import chat_flow
+
+    monkeypatch.setattr(chat_flow, "_settle_restore", slow_settle)
+    task = asyncio.create_task(_chat(sm, "small"))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    _assert_all_free(sm)
+
+
+@pytest.mark.asyncio
 async def test_stream_provider_error_releases_slot(sm, meta_dir):
     class ErrResp:
         status_code = 500

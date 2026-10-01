@@ -137,53 +137,57 @@ async def chat_flow(
     finally:
         if do_cache and restore_key:
             chat_flow_pkg._unregister_pending_restore(restore_key)
-    promstats.slot_wait_seconds.labels(model=effective_model).observe(
-        time.monotonic() - t_acq
-    )
-
-    log.info("after_acquire g=%s key=%s restored=%s", g, key[:16], restored)
-
-    be_id, _mid, slot_id = g
-    client = clients[be_id]
-    decision["restore"]["used_key"] = used_key
-    decision["restore"]["outcome"] = restored
-    decision["slot"] = {"backend": be_id, "model": effective_model, "id": slot_id}
-    ui_obs.req_slot(rid, be_id, effective_model, slot_id)
-    decision["slot_before_chat"] = await chat_flow_pkg._snapshot_slot(client, slot_id, effective_model)
-
-    await chat_flow_pkg._settle_restore(
-        client, slot_id, effective_model, restored, used_key, no_cache, decision
-    )
-
-    body = dict(data)
-    body["model"] = effective_model
-    body["cache_prompt"] = bool(do_cache)
-    body["n_keep"] = -1
-
-    opts = dict(body.get("options") or {})
-    opts["slot_id"] = slot_id
-    opts["id_slot"] = slot_id
-    opts["n_keep"] = -1
-    opts["cache_prompt"] = bool(do_cache)
-    body["options"] = opts
-
-    log.info(
-        "dispatch be=%d slot=%d is_big=%s (restore_target=%s restored=%s model_id=%s)",
-        be_id,
-        slot_id,
-        is_big,
-        restore_key[:16] if restore_key else None,
-        restored,
-        effective_model,
-    )
 
     # The slot is released exactly once per request:
     # - successful stream: the reader task releases it (the generator owns
     #   the slot from this point on);
     # - successful big non-stream: the background save task releases it;
-    # - every other path (errors, exceptions, cancellation): the finally below.
+    # - every other path (a failed pre-dispatch step, errors, exceptions,
+    #   cancellation): the finally at the end of this function.
     task_owns_slot = False
     try:
+        promstats.slot_wait_seconds.labels(model=effective_model).observe(
+            time.monotonic() - t_acq
+        )
+
+        log.info("after_acquire g=%s key=%s restored=%s", g, key[:16], restored)
+
+        be_id, _mid, slot_id = g
+        client = clients[be_id]
+        decision["restore"]["used_key"] = used_key
+        decision["restore"]["outcome"] = restored
+        decision["slot"] = {"backend": be_id, "model": effective_model, "id": slot_id}
+        ui_obs.req_slot(rid, be_id, effective_model, slot_id)
+        decision["slot_before_chat"] = await chat_flow_pkg._snapshot_slot(
+            client, slot_id, effective_model
+        )
+
+        await chat_flow_pkg._settle_restore(
+            client, slot_id, effective_model, restored, used_key, no_cache, decision
+        )
+
+        body = dict(data)
+        body["model"] = effective_model
+        body["cache_prompt"] = bool(do_cache)
+        body["n_keep"] = -1
+
+        opts = dict(body.get("options") or {})
+        opts["slot_id"] = slot_id
+        opts["id_slot"] = slot_id
+        opts["n_keep"] = -1
+        opts["cache_prompt"] = bool(do_cache)
+        body["options"] = opts
+
+        log.info(
+            "dispatch be=%d slot=%d is_big=%s (restore_target=%s restored=%s model_id=%s)",
+            be_id,
+            slot_id,
+            is_big,
+            restore_key[:16] if restore_key else None,
+            restored,
+            effective_model,
+        )
+
         if stream:
             resp = await client.chat_completions(
                 body,
