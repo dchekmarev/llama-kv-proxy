@@ -176,8 +176,6 @@ BIN_CACHE_DIR = os.getenv("BIN_CACHE_DIR", "")
 # Max total size (MB) of .bin files; oldest (LRU) are deleted first.
 # 0 disables the size cap.
 BIN_CACHE_MAX_MB = _env_int("BIN_CACHE_MAX_MB", 0)
-# Interval (seconds) between .bin LRU cleanup runs.
-BIN_CACHE_INTERVAL_S = _env_float("BIN_CACHE_INTERVAL_S", EVICT_INTERVAL_S)
 # Interval (seconds) between meta/.bin reconciliations (both directions:
 # stale metas without a .bin, orphan .bin without a meta). 0 disables it.
 BIN_RECONCILE_INTERVAL_S = _env_float("BIN_RECONCILE_INTERVAL_S", 600)
@@ -192,13 +190,6 @@ BIN_SAVE_GRACE_S = _env_float("BIN_SAVE_GRACE_S", 10)
 # cache chain with an empty restore target and deletes the valid shorter
 # caches via the subsumed-metas logic. 0 disables the check.
 MIN_BIN_SIZE_VALID = _env_int("MIN_BIN_SIZE_VALID", 1)
-
-# Clear a slot's in-memory KV cache (action=erase) before dispatching a small
-# (non-cached) request, so it does not start on top of another conversation's
-# stale KV. Some llama.cpp builds auto-clear on a prompt mismatch, in which
-# case this is redundant; verify against the target build before relying on it.
-# Off by default (no behavior change until verified).
-ERASE_BEFORE_SMALL = _env_bool("ERASE_BEFORE_SMALL", False)
 
 # Erase a slot's in-memory KV cache (action=erase) before dispatching any chat
 # that was NOT preceded by a successful restore. A successful restore already

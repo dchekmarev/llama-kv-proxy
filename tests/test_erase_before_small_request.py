@@ -1,4 +1,4 @@
-# tests/test_erase_before_small.py
+# tests/test_erase_before_small_request.py
 
 """A small (non-cached) request is never preceded by a restore, so with
 ERASE_BEFORE_CHAT on it clears the slot's KV cache before dispatching (it must
