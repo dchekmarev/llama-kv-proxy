@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from fastapi import Request, Response
 
 import app as app_pkg
-from request_id import new_request_id, request_id_var
+from request_id import request_id_var, sanitize_request_id
 
 
 @app_pkg.app.middleware("http")
@@ -18,9 +18,11 @@ async def request_id_middleware(
 
     The id lives in a ContextVar, so every log line of the request (and of the
     background tasks it spawns) carries it. The context is reset afterwards so
-    the next request (or a loop task) starts from an empty id.
+    the next request (or a loop task) starts from an empty id. A client id that
+    is not a plain short token is replaced: it is echoed in a header, logged and
+    used in request-log file names.
     """
-    rid = request.headers.get("x-request-id") or new_request_id()
+    rid = sanitize_request_id(request.headers.get("x-request-id", ""))
     token = request_id_var.set(rid)
     try:
         response = await call_next(request)
