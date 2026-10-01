@@ -191,3 +191,21 @@ def test_proxy_routes_do_not_shadow_native_paths():
     assert "/health" not in paths
     assert "/proxy/slots" in paths
     assert "/proxy/health" in paths
+
+
+@pytest.mark.asyncio
+async def test_passthrough_drops_upstream_content_encoding():
+    """httpx decodes the body in aiter_bytes(), so the upstream
+    content-encoding no longer describes what we send. Forwarding it makes
+    every client that honours it (i.e. any browser, which always sends
+    Accept-Encoding) fail to decode the pass-through body."""
+    client, _, _ = _mock_client(
+        [b"<html>ok</html>"],
+        headers={"content-type": "text/html", "content-encoding": "gzip"},
+    )
+    _setup([client])
+
+    resp = await _passthrough("")
+
+    assert "content-encoding" not in {k.lower() for k in resp.headers}
+    assert resp.headers["content-type"] == "text/html"

@@ -313,6 +313,23 @@ def _forwarded_headers(headers: Any) -> dict[str, str]:
     }
 
 
+def _upstream_headers(headers: Any) -> dict[str, str]:
+    """Upstream response headers to mirror back to the client.
+
+    content-encoding is dropped on top of the hop-by-hop set: the body is
+    read with aiter_bytes(), which makes httpx decode it, so the upstream
+    encoding no longer describes what we send. Keeping it would have the
+    proxy claim a gzip body while streaming plain bytes, and every client
+    that honours the header (any browser, since they always send
+    Accept-Encoding) then fails to decode the pass-through.
+    """
+    return {
+        name: value
+        for name, value in _forwarded_headers(headers).items()
+        if name.lower() != "content-encoding"
+    }
+
+
 async def _iter_upstream(upstream: Any) -> AsyncIterator[bytes]:
     """Yield the upstream body chunks in order, then close the response."""
     try:
@@ -347,5 +364,5 @@ async def passthrough(path: str, request: Request) -> Response:
     return StreamingResponse(
         _iter_upstream(upstream),
         status_code=upstream.status_code,
-        headers=_forwarded_headers(upstream.headers),
+        headers=_upstream_headers(upstream.headers),
     )
