@@ -67,13 +67,24 @@ async def start_stream_task(
     render_ctx: dict | None = None,
     t0: float | None = None,
     metric_model: str | None = None,
+    kill_token: chat_flow.KillToken | None = None,
+    used_key: str | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """t0: the request start (time.monotonic); when given, the reader records
     the request duration, TTFT, outcome and token metrics in its finally.
 
     metric_model: the bounded label for the model metrics. Defaults to model_id,
     which is only safe when the caller knows the name resolved to a real model
-    id; an unresolved client alias must pass the fixed bucket instead."""
+    id; an unresolved client alias must pass the fixed bucket instead.
+
+    kill_token: the request's kill handle. A kill cancels the reader task, which
+    is exactly what a client disconnect does, so the same finally gives the
+    slot back and ends the stream; the reader only adds the killed outcome and
+    the reason the client is told."""
+
+    def _killed() -> bool:
+        return kill_token is not None and kill_token.killed
+
     label = promstats.model_label(metric_model or model_id)
     queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=chat_flow.STREAM_QUEUE_SIZE)
 
@@ -196,24 +207,49 @@ async def start_stream_task(
             externally_cancelled = task is not None and task.cancelling() > 0
             if not externally_cancelled:
                 error_reason = "stream cancelled by backend"
+            elif _killed():
+                # An operator kill, not a client that went away: the client is
+                # still reading, so the finally pushes the SSE error event and
+                # it can tell a kill from a truncated stream.
+                error_reason = "killed by operator"
             log.warning(
-                "stream_reader_cancelled g=%s key=%s external=%s",
+                "stream_reader_cancelled g=%s key=%s external=%s killed=%s",
                 g,
                 key[:16],
                 externally_cancelled,
+                _killed(),
             )
             raise
         except Exception as e:
             log.exception("stream_reader_error g=%s key=%s", g, key[:16])
             error_reason = str(e)
         finally:
+            # The request is over from the dashboard's point of view from here
+            # on, so the kill handle goes first, before any await below: a kill
+            # landing during the cleanup must not cancel this task a second
+            # time and make it skip the slot release.
+            killed = _killed()
+            if rid:
+                chat_flow.unregister_kill(rid)
+            if killed:
+                # Whatever was read is a truncated answer; saving it would
+                # write a meta and a .bin for a conversation nobody will
+                # continue.
+                completed = False
+                # The slot held a prefix that the reader never finished: it no
+                # longer holds exactly the saved conversation, so a later
+                # same-key request must not skip its restore.
+                if used_key is not None:
+                    sm.forget_saved(g, used_key)
             # Request metrics, recorded first (synchronously, before any await
             # below) so a cancellation delivered during cleanup cannot skip
             # them. Outcome: a client-disconnect cancellation is reported as
             # client_disconnect; any other interruption (backend error, push
             # timeout) is an error; a clean read-to-the-end is ok.
             if t0 is not None:
-                if externally_cancelled:
+                if killed:
+                    outcome = "killed"
+                elif externally_cancelled:
                     outcome = "client_disconnect"
                 elif error_reason is not None:
                     outcome = "error"
@@ -353,17 +389,13 @@ async def start_stream_task(
             # request active forever (a stuck "generating" row, a busy_rid on a
             # free slot). It is synchronous and pops by rid, so it is safe here
             # and exactly-once.
-            ui_obs.req_end(
-                rid,
-                status=(
-                    ui_obs.STATUS_ERROR
-                    if error_reason
-                    else ui_obs.STATUS_CANCELLED
-                    if externally_cancelled
-                    else ui_obs.STATUS_DONE
-                ),
-                error=error_reason,
-            )
+            if killed or externally_cancelled:
+                status = ui_obs.STATUS_CANCELLED
+            elif error_reason:
+                status = ui_obs.STATUS_ERROR
+            else:
+                status = ui_obs.STATUS_DONE
+            ui_obs.req_end(rid, status=status, error=error_reason)
             try:
                 try:
                     await resp.aclose()
@@ -378,9 +410,26 @@ async def start_stream_task(
             if not await _bounded_put(queue, None, chat_flow.STREAM_PUT_TIMEOUT):
                 log.warning("stream_reader_sentinel_timeout g=%s key=%s", g, key[:16])
 
+    if _killed():
+        # The kill landed while the backend response was being opened: nothing
+        # has been pushed yet, so the request ends as a plain kill and the
+        # caller's finally gives the slot back. Creating a reader here would
+        # hand the slot to a task nobody can cancel any more.
+        await resp.aclose()
+        raise chat_flow.RequestKilled(rid)
+
     reader_task = asyncio.create_task(reader())
     chat_flow._READER_TASKS.add(reader_task)
     reader_task.add_done_callback(chat_flow._READER_TASKS.discard)
+    # One loop turn before the kill can abort the reader: a task cancelled
+    # before its first step never runs its body, so its finally (which owns
+    # the slot release) would be skipped and the slot would leak.
+    await asyncio.sleep(0)
+    if kill_token is not None:
+        def _abort_reader() -> None:
+            reader_task.cancel()
+
+        kill_token.bind_abort(_abort_reader)
 
     async def gen() -> AsyncGenerator[bytes, None]:
         try:

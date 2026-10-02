@@ -5,7 +5,8 @@
 
 The page polls /proxy/ui/state every 3 s (active requests, history, slots)
 and subscribes to /proxy/ui/events (SSE) for the live token stream of the
-selected request.
+selected request. Every active request has a kill button, which posts to
+/proxy/requests/{rid}/kill (works with the dashboard open or not).
 """
 
 PAGE = r"""<!doctype html>
@@ -66,6 +67,8 @@ tr.req.sel td { background: #1f2a3a; }
 button { background: var(--panel); color: var(--text); border: 1px solid var(--border);
   border-radius: 4px; padding: 2px 10px; cursor: pointer; font: inherit; font-size: 12px; }
 button:hover { border-color: var(--blue); }
+button.kill { color: var(--red); border-color: var(--border); padding: 1px 8px; }
+button.kill:hover { border-color: var(--red); background: #2a1215; }
 .status-queued { color: var(--yellow); } .status-generating { color: var(--green); }
 .status-done { color: var(--dim); } .status-error { color: var(--red); }
 .status-cancelled { color: var(--orange); }
@@ -85,6 +88,7 @@ button:hover { border-color: var(--blue); }
     <table id="active"><thead><tr>
       <th>rid</th><th>model</th><th>slot</th><th>status</th>
       <th>chars</th><th>tok</th><th>tps</th><th>age</th><th>prompt</th>
+      <th></th>
     </tr></thead><tbody></tbody></table>
     <div id="active-empty" class="empty">no active requests</div>
     <h2 style="margin-top:12px">History</h2>
@@ -133,6 +137,14 @@ function tpsOf(r) {
   return el > 0 ? (t / el).toFixed(1) : "—";
 }
 
+async function killReq(rid) {
+  try {
+    await fetch("/proxy/requests/" + encodeURIComponent(rid) + "/kill",
+                {method: "POST"});
+  } catch (e) { /* the poll below shows what actually happened */ }
+  poll();
+}
+
 function renderActive() {
   const tb = $("active").tBodies[0]; tb.innerHTML = "";
   const act = STATE.active || [];
@@ -147,6 +159,14 @@ function renderActive() {
       "<td>" + r.n_chars + "</td><td>" + (tokOf(r.usage) ?? "—") + "</td>" +
       "<td>" + tpsOf(r) + "</td><td>" + age(r.started_at) + "</td>" +
       '<td class="preview">' + esc(r.prompt_preview) + "</td>";
+    // The full rid, not the 8 chars shown above: the kill endpoint needs it.
+    const btn = document.createElement("button");
+    btn.className = "kill";
+    btn.textContent = "kill";
+    btn.onclick = (e) => { e.stopPropagation(); killReq(r.rid); };
+    const cell = document.createElement("td");
+    cell.appendChild(btn);
+    tr.appendChild(cell);
     tr.onclick = () => select(r.rid);
     tb.appendChild(tr);
   }

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import chat_flow
 import hashing as hs
 from backend import slot_manager as sm_module
 from backend.slot_manager import SlotManager
@@ -63,6 +64,20 @@ def _clean_ui_registry():
     if task is not None:
         task.cancel()
         reg._broadcaster = None
+
+
+@pytest.fixture(autouse=True)
+def _clean_kill_registry():
+    """Reset the kill registry between tests.
+
+    Every chat_flow run binds a kill token for its request id; without this
+    reset a token left behind by a test (a killed one is dropped explicitly, a
+    finished one by the pipeline) would make the next test's request id
+    unkillable.
+    """
+    chat_flow.reset_kills()
+    yield
+    chat_flow.reset_kills()
 
 
 @pytest.fixture()

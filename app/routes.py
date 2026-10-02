@@ -23,6 +23,7 @@ import hashing
 from cache import bin_cache
 from core import promstats
 from core import version as version_info
+from core.request_id import sanitize_request_id
 from obs import metrics, ui_page
 from obs import ui as ui_obs
 
@@ -142,6 +143,36 @@ async def health() -> dict[str, Any]:
 async def slots_state() -> dict[str, Any]:
     """The discovered slot pools as reported by the slot manager."""
     return {"slots": app_pkg.app.state.sm.aggregated_state()}
+
+
+# --- request control -----------------------------------------------------------
+
+
+@app_pkg.app.get("/proxy/requests")
+async def requests_state() -> dict[str, Any]:
+    """The requests that can be killed, with the stage each one is in.
+
+    The dashboard's own state endpoint is not a substitute: it is empty when
+    the UI is off, while a kill works either way.
+    """
+    return {"requests": chat_flow.active_kills()}
+
+
+@app_pkg.app.post("/proxy/requests/{rid}/kill")
+async def kill_request(rid: str) -> Response:
+    """Kill one request by its correlation id, queued or generating.
+
+    A queued request is dropped from the slot queue; a generating one has its
+    backend call aborted. Either way the client is answered 499 and the slot
+    (if it had one) goes back to the pool without a cache write. There is no
+    authentication: anyone who can reach the proxy can drop any request, so it
+    belongs on a trusted network only.
+    """
+    stage = chat_flow.kill_request(sanitize_request_id(rid))
+    if stage is None:
+        return JSONResponse({"error": "unknown request id"}, status_code=404)
+    log.info("kill_request rid=%s stage=%s", rid, stage)
+    return JSONResponse({"rid": rid, "killed": True, "stage": stage})
 
 
 # --- cache administration -----------------------------------------------------

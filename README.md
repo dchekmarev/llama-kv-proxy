@@ -206,7 +206,9 @@ All parameters are environment variables; defaults in parentheses.
 | GET | `/version` | Proxy name and version (single source of truth: `version.py`). |
 | GET | `/proxy/slots` | Aggregated slot state across all backends (state, n_ctx, total_tokens, LRU mark). |
 | GET | `/proxy/health` | Backend availability probe plus slot state. |
-| GET | `/proxy/ui/` | Live dashboard (self-contained HTML page): active requests with live token tails, recent history, slot grid. |
+| GET | `/proxy/requests` | The requests that can be killed, each with its stage (`queued` / `generating`). Works with the dashboard off, unlike `/proxy/ui/state`. |
+| POST | `/proxy/requests/{rid}/kill` | Kill one request by its correlation id, queued or generating. See [Killing a request](#killing-a-request). |
+| GET | `/proxy/ui/` | Live dashboard (self-contained HTML page): active requests with live token tails, recent history, slot grid, a kill button per active request. |
 | GET | `/proxy/ui/state` | JSON snapshot: active requests (with token tails), history, slots with `busy_rid`. |
 | GET | `/proxy/ui/request/{rid}` | Full prompt transcript of an in-flight or recent (history) request. |
 | GET | `/proxy/ui/events` | SSE stream for the dashboard: initial snapshot, then token batches and start/slot/end events (idle stream stays open without heartbeat frames; the page also polls `/proxy/ui/state`). |
@@ -221,7 +223,7 @@ All parameters are environment variables; defaults in parentheses.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `llama_kv_proxy_requests_total` | counter | `model`, `stream`, `outcome` | Chat requests by outcome: `ok`, `error`, `acquire_timeout`, `client_disconnect`. |
+| `llama_kv_proxy_requests_total` | counter | `model`, `stream`, `outcome` | Chat requests by outcome: `ok`, `error`, `acquire_timeout`, `client_disconnect`, `killed`. |
 | `llama_kv_proxy_request_duration_seconds` | histogram | `model`, `stream` | Total request duration (start to response end). |
 | `llama_kv_proxy_ttft_seconds` | histogram | `model`, `stream` | Time to first token; for non-stream it equals the total duration. |
 | `llama_kv_proxy_tokens_total` | counter | `model`, `kind` | Backend-reported tokens: `prompt`, `completion`, `cached`. |

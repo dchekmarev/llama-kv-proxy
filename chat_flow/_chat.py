@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 import chat_flow as chat_flow_pkg
 import hashing as hs
 from backend.llama_client import LlamaClient
-from backend.slot_manager import SlotManager
+from backend.slot_manager import GSlot, SlotManager
 from core import promstats
 from core.request_id import request_id_var
 from obs import reqlog
@@ -79,6 +79,12 @@ async def chat_flow(
         messages=messages,
     )
 
+    # Kill handle: from here on the request is addressable by its correlation
+    # id, so it can be dropped from the slot queue or stopped mid-generation.
+    # It is dropped again when the request is really over: the finally below,
+    # or the stream reader for a streaming request (which outlives this call).
+    kill_token = chat_flow_pkg.bind_kill(rid, effective_model)
+
     def _req_outcome(outcome: str) -> None:
         promstats.requests_total.labels(
             model=metric_model, stream="true" if stream else "false", outcome=outcome
@@ -96,6 +102,28 @@ async def chat_flow(
         promstats.request_duration_seconds.labels(
             model=metric_model, stream="true" if stream else "false"
         ).observe(time.monotonic() - t0_mono)
+
+    def _killed(
+        slot: GSlot | None = None, used_key: str | None = None
+    ) -> JSONResponse:
+        """The answer for a request an operator killed (499).
+
+        A kill that landed mid-generation drops the slot's "holds this key"
+        record: llama.cpp kept every token it had already produced, so the
+        slot no longer holds exactly the saved conversation, and a later
+        same-key request would skip its restore (SKIP_RESTORE_SAME_SLOT) and
+        continue on a wrong context. A kill in the queue never owned a slot
+        and has nothing to invalidate.
+        """
+        if slot is not None and used_key is not None:
+            sm.forget_saved(slot, used_key)
+        chat_flow_pkg.unregister_kill(rid)
+        _req_outcome("killed")
+        ui_obs.req_end(rid, status=ui_obs.STATUS_CANCELLED, error="killed")
+        _observe_latency()
+        reqlog.log_file("response", rid, ts, {"killed": True, "stage": kill_token.stage})
+        log.warning("chat_killed rid=%s stage=%s slot=%s", rid, kill_token.stage, slot)
+        return JSONResponse({"error": "killed"}, status_code=499)
 
     decision: dict = chat_flow_pkg._new_decision(
         is_big, no_cache, n_words, effective_model, render_ctx
@@ -137,10 +165,13 @@ async def chat_flow(
     try:
         try:
             g, _lock, restored, used_key = await asyncio.wait_for(
-                sm.acquire_for_request(
-                    effective_model,
-                    restore_key if do_cache else None,
-                    resolve_restore_key=chat_flow_pkg._resolve_restore_key if do_cache else None,
+                chat_flow_pkg.race_kill(
+                    sm.acquire_for_request(
+                        effective_model,
+                        restore_key if do_cache else None,
+                        resolve_restore_key=chat_flow_pkg._resolve_restore_key if do_cache else None,
+                    ),
+                    kill_token,
                 ),
                 timeout=chat_flow_pkg.ACQUIRE_TIMEOUT,
             )
@@ -156,10 +187,13 @@ async def chat_flow(
             ).inc()
             ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error="acquire_timeout")
             _observe_latency()
+            chat_flow_pkg.unregister_kill(rid)
             return JSONResponse(
                 {"error": "all slots busy, please retry later"},
                 status_code=503,
             )
+        except chat_flow_pkg.RequestKilled:
+            return _killed()
     finally:
         if do_cache and restore_key:
             chat_flow_pkg._unregister_pending_restore(restore_key)
@@ -171,6 +205,9 @@ async def chat_flow(
     # - every other path (a failed pre-dispatch step, errors, exceptions,
     #   cancellation): the finally at the end of this function.
     task_owns_slot = False
+    # A streaming request stays killable after this function returns: the
+    # reader task owns the slot from here on and unregisters the token itself.
+    stream_handed_off = False
     try:
         promstats.slot_wait_seconds.labels(model=metric_model).observe(
             time.monotonic() - t_acq
@@ -184,6 +221,7 @@ async def chat_flow(
         decision["restore"]["outcome"] = restored
         decision["slot"] = {"backend": be_id, "model": effective_model, "id": slot_id}
         ui_obs.req_slot(rid, be_id, effective_model, slot_id)
+        kill_token.stage = chat_flow_pkg.STAGE_GENERATING
         decision["slot_before_chat"] = await chat_flow_pkg._snapshot_slot(
             client, slot_id, effective_model
         )
@@ -215,10 +253,13 @@ async def chat_flow(
         )
 
         if stream:
-            resp = await client.chat_completions(
-                body,
-                slot_id=slot_id,
-                stream=True,
+            resp = await chat_flow_pkg.race_kill(
+                client.chat_completions(
+                    body,
+                    slot_id=slot_id,
+                    stream=True,
+                ),
+                kill_token,
             )
             if resp.status_code != 200:
                 err_txt = await resp.aread()
@@ -255,8 +296,11 @@ async def chat_flow(
                 render_ctx=render_ctx,
                 t0=t0_mono,
                 metric_model=metric_model,
+                kill_token=kill_token,
+                used_key=used_key,
             )
             task_owns_slot = True
+            stream_handed_off = True
 
             headers = {
                 "Cache-Control": "no-cache",
@@ -269,10 +313,13 @@ async def chat_flow(
             )
 
         else:
-            out = await client.chat_completions(
-                body,
-                slot_id=slot_id,
-                stream=False,
+            out = await chat_flow_pkg.race_kill(
+                client.chat_completions(
+                    body,
+                    slot_id=slot_id,
+                    stream=False,
+                ),
+                kill_token,
             )
             if not isinstance(out, dict):
                 _req_outcome("error")
@@ -390,6 +437,11 @@ async def chat_flow(
             ui_obs.req_end(rid)
             return JSONResponse(content=out, status_code=200)
 
+    except chat_flow_pkg.RequestKilled:
+        # The request was killed between the slot acquisition and the answer.
+        # The finally below gives the slot back; nothing is saved (a partial
+        # KV cache is useless for restore and only wastes disk).
+        return _killed(g, used_key)
     except httpx.HTTPError as e:
         # A connect/timeout failure: no backend response at all, so this is a
         # genuine upstream failure (502), not a proxy bug (500).
@@ -405,6 +457,8 @@ async def chat_flow(
         _observe_latency()
         return JSONResponse({"error": str(e)}, status_code=500)
     finally:
+        if not stream_handed_off:
+            chat_flow_pkg.unregister_kill(rid)
         if not task_owns_slot:
             log.info("slot_release g=%s key=%s via=finally", g, key[:16])
             sm.release(g)

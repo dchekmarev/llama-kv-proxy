@@ -32,10 +32,16 @@ Additionally:
     * reader tasks are kept by strong references (_READER_TASKS) so they are
       not GC-collected before their finally runs.
 
+A request is killable by its correlation id while it waits for a slot and
+while it generates (_kill). The pipeline races every backend await against the
+request's kill token; the streaming reader is cancelled by the kill exactly as
+it is by a client disconnect. A killed request answers 499 (non-stream), or
+ends its stream with an SSE error event, and never saves a partial answer.
+
 The implementation lives in private submodules (_state, _model, _restore,
-_diagnostics, _content, _lru, _save, _stream, _chat). Every name this package
-owns - including the private ones - is re-exported here, and the submodules
-resolve it through this module at call time, so monkeypatching
+_diagnostics, _content, _lru, _save, _stream, _chat, _kill). Every name this
+package owns - including the private ones - is re-exported here, and the
+submodules resolve it through this module at call time, so monkeypatching
 `chat_flow.<name>` is seen by the internal code exactly as it was when this
 was a single flat module.
 """
@@ -91,6 +97,30 @@ from ._diagnostics import (
     _set_save_outcome,
     _snapshot_slot,
 )
+from ._kill import (
+    STAGE_GENERATING,
+    STAGE_QUEUED,
+    KillToken,
+    RequestKilled,
+)
+from ._kill import (
+    active as active_kills,
+)
+from ._kill import (
+    bind as bind_kill,
+)
+from ._kill import (
+    kill as kill_request,
+)
+from ._kill import (
+    race as race_kill,
+)
+from ._kill import (
+    reset as reset_kills,
+)
+from ._kill import (
+    unregister as unregister_kill,
+)
 from ._lru import _purge_backend_files, _schedule_lru_check
 from ._model import _resolve_effective_model
 from ._restore import (
@@ -132,6 +162,8 @@ __all__ = [
     "RENDER_CTX_FIELDS",
     "RESTORE_MISSING",
     "SAVE_WAIT_TIMEOUT",
+    "STAGE_GENERATING",
+    "STAGE_QUEUED",
     "STREAM_PUT_TIMEOUT",
     "STREAM_QUEUE_SIZE",
     "WORDS_PER_BLOCK",
@@ -144,7 +176,9 @@ __all__ = [
     "AsyncGenerator",
     "GSlot",
     "JSONResponse",
+    "KillToken",
     "LlamaClient",
+    "RequestKilled",
     "Response",
     "SlotManager",
     "StreamingResponse",
@@ -176,19 +210,25 @@ __all__ = [
     "_stream_usage_of",
     "_unregister_pending_restore",
     "_wait_for_inflight_save",
+    "active_kills",
     "asyncio",
     "bin_cache",
+    "bind_kill",
     "chat_flow",
     "codecs",
     "hs",
     "httpx",
     "json",
+    "kill_request",
     "log",
     "logging",
     "promstats",
+    "race_kill",
     "reqlog",
     "request_id_var",
+    "reset_kills",
     "start_stream_task",
     "time",
     "ui_obs",
+    "unregister_kill",
 ]

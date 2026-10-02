@@ -281,16 +281,22 @@ class Harness:
 
     # ---------- request builders ----------
 
-    def chat(self, big: bool, stream: bool, tag: str, timeout: float) -> tuple[int, str]:
+    def chat(self, big: bool, stream: bool, tag: str, timeout: float,
+             rid: str = "") -> tuple[int, str]:
         payload = make_payload(big=big, stream=stream, tag=tag)
+        # A client-chosen X-Request-ID is echoed back and is the id the kill
+        # endpoint takes, so a scenario can address its own requests.
+        headers = {"X-Request-ID": rid} if rid else None
         if stream:
             with httpx.Client(timeout=httpx.Timeout(timeout, connect=5)) as c, \
-                    c.stream("POST", self.px_url + "/v1/chat/completions", json=payload) as r:
+                    c.stream("POST", self.px_url + "/v1/chat/completions",
+                             json=payload, headers=headers) as r:
                 body = b"".join(r.iter_bytes())
                 return r.status_code, body.decode("utf-8", "ignore")
         r = httpx.post(
             self.px_url + "/v1/chat/completions",
             json=payload,
+            headers=headers,
             timeout=httpx.Timeout(timeout, connect=5),
         )
         return r.status_code, r.text
@@ -312,6 +318,64 @@ class Harness:
             c.close()
 
     # ---------- scenarios ----------
+
+    def killable(self) -> set[str]:
+        """The correlation ids currently listed as killable."""
+        r = httpx.get(self.px_url + "/proxy/requests", timeout=10)
+        return {entry["rid"] for entry in r.json()["requests"]}
+
+    def kill_request(self, rid: str) -> tuple[int, str]:
+        r = httpx.post(self.px_url + f"/proxy/requests/{rid}/kill", timeout=10)
+        return r.status_code, r.text[:160]
+
+    def scenario_kill(self, out: Outcome):
+        """Operator kills: every request must die (499, or an SSE error event
+        for a stream) and give its slot back, queued ones included."""
+        a = self.args
+        # Long requests: the kill must land while they are still running.
+        self.control(mode="ok", delay=3.0, chunk_interval=0.5, n_chunks=20)
+        try:
+            rids = [f"kill-{i}" for i in range(a.workers)]
+
+            def one(i: int):
+                t0 = time.time()
+                try:
+                    status, body = self.chat(
+                        False, i % 2 == 0, f"k{i}", 120, rid=rids[i]
+                    )
+                    ok = status == 499 or "killed by operator" in body
+                    out.add(f"kill{i}", ok, time.time() - t0,
+                            f"status={status} body={body[:120]}")
+                except Exception as e:  # noqa: BLE001
+                    out.add(f"kill{i}", False, time.time() - t0, repr(e))
+
+            with ThreadPoolExecutor(max_workers=a.workers) as ex:
+                futs = [ex.submit(one, i) for i in range(a.workers)]
+                listed: set[str] = set()
+                for _ in range(100):
+                    listed = self.killable()
+                    if set(rids) <= listed:
+                        break
+                    time.sleep(0.2)
+                out.add("listed", set(rids) <= listed, 0.0,
+                        f"listed={sorted(listed)}")
+                for rid in rids:
+                    status, body = self.kill_request(rid)
+                    out.add(f"killapi[{rid}]", status == 200, 0.0,
+                            f"status={status} {body}")
+                status, body = self.kill_request("kill-never-existed")
+                out.add("kill_unknown", status == 404, 0.0,
+                        f"status={status} {body}")
+                for f in futs:
+                    f.result()
+            time.sleep(3.0)
+            left = self.killable()
+            out.add("index_drained", not left, 0.0, f"still listed={sorted(left)}")
+            self.check_violations("kill", out)
+            self.drain_check("kill", out, delay=3.0)
+            self.check_slot_exclusivity_proxy("kill", out)
+        finally:
+            self.control(mode="ok", delay=self.delay, n_chunks=20, chunk_interval=0.5)
 
     def scenario_steady(self, out: Outcome):
         a = self.args
@@ -541,6 +605,7 @@ SCENARIOS = {
     "disconnect": "scenario_disconnect",
     "half_request": "scenario_half_request",
     "dangling": "scenario_dangling",
+    "kill": "scenario_kill",
     "chaos": "scenario_chaos",
 }
 
