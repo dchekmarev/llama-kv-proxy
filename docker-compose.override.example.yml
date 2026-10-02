@@ -4,6 +4,11 @@
 #
 # `docker compose up` merges this file on top of docker-compose.yml
 # automatically (no extra flags).
+#
+# After `docker compose up -d --build`, confirm it is up:
+#   curl -s localhost:8080/proxy/health | python3 -m json.tool
+# Every tunable (timeouts, cache caps, UI, logging) is an env var; the full
+# reference is the README "Configuration" table (or .env.example).
 services:
   llama-kv-proxy:
     volumes:
