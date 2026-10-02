@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/dchekmarev/llama-kv-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/dchekmarev/llama-kv-proxy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
-[![Version](https://img.shields.io/badge/version-0.0.1)](./version.py)
+[![Version](https://img.shields.io/badge/version-0.0.1)](./core/version.py)
 
 A proxy in front of llama.cpp that makes long-context chat and IDE workflows faster: it manages llama.cpp slots, reuses cached KV context, and restores saved caches from disk when needed. It speaks the OpenAI-compatible Chat Completions API (streaming SSE and non-streaming), so existing clients can connect without changes.
 
@@ -203,7 +203,7 @@ All parameters are environment variables; defaults in parentheses.
 |---|---|---|
 | POST | `/v1/chat/completions` | OpenAI-compatible chat endpoint (stream and non-stream). |
 | GET | `/v1/models` | Union of the backends' model lists (deduped by id); falls back to `MODEL_ID` when no backend reports any model. |
-| GET | `/version` | Proxy name and version (single source of truth: `version.py`). |
+| GET | `/version` | Proxy name and version (single source of truth: `core/version.py`). |
 | GET | `/proxy/slots` | Aggregated slot state across all backends (state, n_ctx, total_tokens, LRU mark). |
 | GET | `/proxy/health` | Backend availability probe plus slot state. |
 | GET | `/proxy/requests` | The requests that can be killed, each with its stage (`queued` / `generating`). Works with the dashboard off, unlike `/proxy/ui/state`. |
@@ -260,7 +260,7 @@ as a flat top-level module, and the layer below never imports the one above:
 | `hashing/` | Prefix/block hashing, meta files, the in-RAM restore index, two-tier matching, eviction |
 | `cache/` | Direct `.bin` cleanup, LRU size cap, meta/`.bin` reconciliation |
 | `obs/` | `metrics`: Prometheus aggregation of backend `/metrics` across backends/models. `reqlog`: request/response/prefix JSON logging with group rotation. `ui`: live request registry and the dashboard's event stream. `ui_page`: the dashboard HTML |
-| `pyproject.toml` | Project metadata; reads the version from `version.py` |
+| `pyproject.toml` | Project metadata; reads the version from `core/version.py` |
 | `tests/` | pytest suite |
 
 ## Development
@@ -272,9 +272,7 @@ pip install -r requirements-dev.txt mypy
 
 python3 -m pytest tests/ -q   # run the test suite
 ruff check .                  # lint
-python3 -m mypy app/ chat_flow/ config.py logging_setup.py slot_manager.py \
-  llama_client.py hashing/ bin_cache.py metrics.py request_id.py version.py \
-  llama_kv_proxy.py meta_index.py promstats.py reqlog.py ui.py ui_page.py
+python3 -m mypy app/ backend/ cache/ chat_flow/ core/ hashing/ obs/   # type check
 ```
 
 CI (`.github/workflows/ci.yml`) runs the same checks (ruff, mypy, pytest) on every push and pull request.
