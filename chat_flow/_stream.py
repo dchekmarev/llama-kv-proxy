@@ -241,6 +241,12 @@ async def start_stream_task(
                 # same-key request must not skip its restore.
                 if used_key is not None:
                     sm.forget_saved(g, used_key)
+                # Also erase the slot on the backend to stop generation immediately
+                try:
+                    client = sm.backends[g[0]]["client"]
+                    await client.erase_slot(g[2], model=g[1])
+                except Exception:
+                    log.debug("erase_after_kill_failed g=%s", g, exc_info=True)
             # Request metrics, recorded first (synchronously, before any await
             # below) so a cancellation delivered during cleanup cannot skip
             # them. Outcome: a client-disconnect cancellation is reported as

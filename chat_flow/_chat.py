@@ -84,6 +84,7 @@ async def chat_flow(
     # It is dropped again when the request is really over: the finally below,
     # or the stream reader for a streaming request (which outlives this call).
     kill_token = chat_flow_pkg.bind_kill(rid, effective_model)
+    killed_flag = False
 
     def _req_outcome(outcome: str) -> None:
         promstats.requests_total.labels(
@@ -115,6 +116,8 @@ async def chat_flow(
         continue on a wrong context. A kill in the queue never owned a slot
         and has nothing to invalidate.
         """
+        nonlocal killed_flag
+        killed_flag = True
         if slot is not None and used_key is not None:
             sm.forget_saved(slot, used_key)
         chat_flow_pkg.unregister_kill(rid)
@@ -193,6 +196,7 @@ async def chat_flow(
                 status_code=503,
             )
         except chat_flow_pkg.RequestKilled:
+            killed_flag = True
             return _killed()
     finally:
         if do_cache and restore_key:
@@ -441,6 +445,13 @@ async def chat_flow(
         # The request was killed between the slot acquisition and the answer.
         # The finally below gives the slot back; nothing is saved (a partial
         # KV cache is useless for restore and only wastes disk).
+        killed_flag = True
+        try:
+            if g is not None:
+                client = sm.backends[g[0]]["client"]
+                await client.erase_slot(g[2], model=g[1])
+        except Exception:
+            log.debug("erase_after_kill_failed g=%s", g, exc_info=True)
         return _killed(g, used_key)
     except httpx.HTTPError as e:
         # A connect/timeout failure: no backend response at all, so this is a
