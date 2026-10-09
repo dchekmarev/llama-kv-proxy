@@ -23,6 +23,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
+from ._pause import PausedRetry
+
 log = logging.getLogger(__name__)
 
 # The two stages a request can be killed in. "queued" is waiting for a slot,
@@ -137,6 +139,16 @@ async def race(awaitable: Awaitable[T], token: KillToken | None) -> T:
             {work, killer}, return_when=asyncio.FIRST_COMPLETED
         )
         if work in done:
+            # A kill that landed while the work was unwinding a pause (the
+            # work aborted with PausedRetry) must win: otherwise the retry
+            # loop would re-run the request under a fresh token and the kill
+            # would be lost.
+            if (
+                token.killed
+                and not work.cancelled()
+                and isinstance(work.exception(), PausedRetry)
+            ):
+                raise RequestKilled(token.rid)
             return work.result()
         raise RequestKilled(token.rid)
     finally:

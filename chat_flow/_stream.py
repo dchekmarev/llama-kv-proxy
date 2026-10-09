@@ -6,7 +6,7 @@ import asyncio
 import codecs
 import json
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, AsyncIterator
 
 import httpx
 
@@ -49,6 +49,16 @@ async def _bounded_put(
             await asyncio.sleep(min(0.01, max(0.0, deadline - loop.time())))
 
 
+async def _prepend(
+    first: bytes | None, it: AsyncIterator[bytes]
+) -> AsyncIterator[bytes]:
+    """Yield `first` (when present) then every chunk of `it`."""
+    if first:
+        yield first
+    async for chunk in it:
+        yield chunk
+
+
 async def start_stream_task(
     resp: httpx.Response,
     g: GSlot,
@@ -69,6 +79,8 @@ async def start_stream_task(
     metric_model: str | None = None,
     kill_token: chat_flow.KillToken | None = None,
     used_key: str | None = None,
+    raw_iter: AsyncIterator[bytes] | None = None,
+    first_chunk: bytes | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """t0: the request start (time.monotonic); when given, the reader records
     the request duration, TTFT, outcome and token metrics in its finally.
@@ -80,13 +92,22 @@ async def start_stream_task(
     kill_token: the request's kill handle. A kill cancels the reader task, which
     is exactly what a client disconnect does, so the same finally gives the
     slot back and ends the stream; the reader only adds the killed outcome and
-    the reason the client is told."""
+    the reason the client is told.
+
+    raw_iter / first_chunk: when the caller prefetched the backend's first
+    chunk to keep the SSE commit point at the first byte, it passes the
+    advanced iterator and that chunk so the reader replays it first. With the
+    defaults the reader iterates `resp.aiter_raw()` itself."""
 
     def _killed() -> bool:
         return kill_token is not None and kill_token.killed
 
     label = promstats.model_label(metric_model or model_id)
     queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=chat_flow.STREAM_QUEUE_SIZE)
+    # The caller may have prefetched the first chunk (to keep the SSE commit
+    # point at the first byte); iterate the same raw iterator it already
+    # advanced, with that chunk replayed first.
+    stream_iter = raw_iter if raw_iter is not None else resp.aiter_raw()
 
     async def reader():
         log.info("stream_reader_start g=%s key=%s", g, key[:16])
@@ -161,7 +182,7 @@ async def start_stream_task(
             return field
 
         try:
-            async for chunk in resp.aiter_raw():
+            async for chunk in _prepend(first_chunk, stream_iter):
                 if not chunk:
                     continue
                 if ttft is None and t0 is not None:

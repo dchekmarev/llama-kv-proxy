@@ -4,6 +4,7 @@
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 
 import httpx
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -19,6 +20,7 @@ from obs import reqlog
 from obs import ui as ui_obs
 
 from . import _state
+from ._kill import KillToken
 
 log = _state.log
 
@@ -47,6 +49,38 @@ async def chat_flow(
         except chat_flow_pkg.PausedRetry:
             log.info("chat_paused_retry rid=%s", rid)
             continue
+
+
+async def _prefetch_first_chunk(
+    resp: httpx.Response, kill_token: KillToken
+) -> tuple[AsyncIterator[bytes], bytes | None]:
+    """Read the backend's first body chunk before the SSE response commits.
+
+    For a stream the commit point is the first body byte, not the response
+    headers: until something is sent the client has seen nothing, so a pause
+    (or a kill) that lands during the prefill can abort the dispatch here and
+    be handled before the client is given a 200 -- the retry loop re-runs the
+    attempt, a kill becomes a plain 499. Returns the raw iterator (advanced
+    past the first chunk) and that chunk, or `(iterator, None)` for an empty
+    stream. On abort the upstream response is closed.
+    """
+    raw_iter = resp.aiter_raw()
+    try:
+        first = await chat_flow_pkg.race_kill(
+            chat_flow_pkg.race_pause(raw_iter.__anext__()), kill_token
+        )
+    except StopAsyncIteration:
+        return raw_iter, None
+    except BaseException:
+        try:
+            await resp.aclose()
+        except BaseException:
+            # A second cancellation landing during the close must not mask the
+            # abort: the original exception is what the caller handles (and a
+            # real client disconnect is an abort too, so it still propagates).
+            log.debug("prefetch_aclose_failed", exc_info=True)
+        raise
+    return raw_iter, first
 
 
 async def _chat_once(
@@ -334,6 +368,12 @@ async def _chat_once(
                     chat_flow_pkg._provider_error_status(resp.status_code),
                 )
 
+            # The first backend chunk is read here, before the response is
+            # committed: a pause during the prefill aborts the attempt (the
+            # retry loop re-dispatches) instead of becoming a stream that has
+            # to drain, and the client never sees headers for a stream that
+            # was never produced.
+            raw_iter, first_chunk = await _prefetch_first_chunk(resp, kill_token)
             gen = await chat_flow_pkg.start_stream_task(
                 resp,
                 g,
@@ -354,6 +394,8 @@ async def _chat_once(
                 metric_model=metric_model,
                 kill_token=kill_token,
                 used_key=used_key,
+                raw_iter=raw_iter,
+                first_chunk=first_chunk,
             )
             task_owns_slot = True
             stream_handed_off = True

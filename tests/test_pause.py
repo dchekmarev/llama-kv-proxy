@@ -15,7 +15,11 @@ import asyncio
 import json
 import time
 
+import pytest
+from fastapi.responses import StreamingResponse
+
 import app as app_module
+import chat_flow
 from app import routes as routes_mod
 from core import pause as pause_mod
 from core import promstats
@@ -38,14 +42,70 @@ class BodyRequest:
         return self._raw
 
 
-async def _chat(sm, content, rid):
+class GatedResp:
+    """Fake httpx stream: yields chunks, optionally gated before the first.
+
+    A gate makes the prefill hang so a test controls exactly when the backend
+    produces its first byte.
+    """
+
+    status_code = 200
+
+    def __init__(self, chunks, gate=None, entered=None):
+        self._chunks = list(chunks)
+        self._gate = gate
+        self._entered = entered
+        self.closed = False
+
+    async def aiter_raw(self):
+        if self._entered is not None:
+            self._entered.set()
+        if self._gate is not None:
+            await self._gate.wait()
+        for c in self._chunks:
+            yield c
+
+    async def aclose(self):
+        self.closed = True
+
+
+class ChunkGateResp:
+    """Fake httpx stream whose second chunk waits on a gate (first is free)."""
+
+    status_code = 200
+
+    def __init__(self, first, rest, gate, first_event=None):
+        self._first = first
+        self._rest = list(rest)
+        self._gate = gate
+        self._first_event = first_event
+        self.closed = False
+
+    async def aiter_raw(self):
+        yield self._first
+        if self._first_event is not None:
+            self._first_event.set()
+        await self._gate.wait()
+        for c in self._rest:
+            yield c
+
+    async def aclose(self):
+        self.closed = True
+
+
+async def _consume(resp):
+    return b"".join([c async for c in resp.body_iterator])
+
+
+async def _chat(sm, content, rid, stream=False):
     app_module.app.state.sm = sm
     app_module.app.state.clients = [sm.backends[0]["client"]]
+    data = {"messages": [{"role": "user", "content": content}]}
+    if stream:
+        data["stream"] = True
     token = request_id_var.set(rid)
     try:
-        return await app_module.chat(
-            FakeRequest({"messages": [{"role": "user", "content": content}]})
-        )
+        return await app_module.chat(FakeRequest(data))
     finally:
         request_id_var.reset(token)
 
@@ -250,6 +310,133 @@ async def test_pause_redispatches_an_in_flight_non_stream(sm, meta_dir):
     assert resp.status_code == 200
     assert calls == 2
     assert pause_mod.snapshot()["activity"] == 0
+    _assert_all_free(sm)
+
+
+async def test_pause_redispatches_a_stream_in_prefill(sm, meta_dir):
+    """A pause that lands before the first backend byte aborts the dispatch
+    (still no client-visible commit) and re-runs it: the client never gets
+    headers for the dropped attempt and sees no disconnect."""
+    gate = asyncio.Event()
+    started = asyncio.Event()
+    entered = asyncio.Event()
+    responses = []
+
+    async def chat(body, slot_id=None, stream=False):
+        if not responses:
+            started.set()
+            resp = GatedResp([b"data: stale\n\n"], gate=gate, entered=entered)
+        else:
+            resp = GatedResp([b"data: fresh\n\n", b"data: [DONE]\n\n"])
+        responses.append(resp)
+        return resp
+
+    sm.backends[0]["client"].chat_completions = chat
+    task = asyncio.create_task(_chat(sm, "hi", "rid-stream", stream=True))
+    await asyncio.wait_for(started.wait(), 1)
+    await asyncio.wait_for(entered.wait(), 1)
+
+    # Pause lands while the prefill hangs: race_pause aborts the attempt and
+    # releases its slot, so request() drains and activates.
+    await asyncio.wait_for(pause_mod.request(30), 2)
+    assert task.done() is False, "the stream must not commit while paused"
+    _assert_all_free(sm)
+    pause_mod.resume()
+
+    resp = await asyncio.wait_for(task, 2)
+    assert resp.status_code == 200
+    body = await _consume(resp)
+    assert b"data: fresh" in body and b"data: stale" not in body
+    assert len(responses) == 2
+    assert responses[0].closed, "the aborted upstream must be closed"
+    assert (
+        promstats.counter_sum(
+            promstats.requests_total,
+            model="m1",
+            stream="true",
+            outcome="client_disconnect",
+        )
+        == 0.0
+    )
+    _assert_all_free(sm)
+
+
+async def test_pause_after_first_chunk_drains_the_stream(sm, meta_dir):
+    """Once the first byte is committed (prefetched) a pause drains the
+    stream instead of cutting it: the whole response reaches the client."""
+    gate = asyncio.Event()
+    first_event = asyncio.Event()
+
+    async def chat(body, slot_id=None, stream=False):
+        return ChunkGateResp(
+            b"data: one\n\n", [b"data: two\n\n", b"data: [DONE]\n\n"], gate, first_event
+        )
+
+    sm.backends[0]["client"].chat_completions = chat
+    task = asyncio.create_task(_chat(sm, "hi", "rid-drain", stream=True))
+    resp = await asyncio.wait_for(task, 2)
+    assert isinstance(resp, StreamingResponse)
+    reader = asyncio.create_task(_consume(resp))
+    await asyncio.wait_for(first_event.wait(), 1)
+
+    pause_task = asyncio.create_task(pause_mod.request(30))
+    await asyncio.sleep(0.05)
+    assert not pause_task.done(), "pause must wait for the committed stream"
+    gate.set()
+    await asyncio.wait_for(pause_task, 2)
+    body = await reader
+    assert b"data: one" in body and b"data: two" in body
+    _assert_all_free(sm)
+
+
+async def test_kill_during_prefill_answers_499(sm, meta_dir):
+    """A kill before the first byte answers a plain 499 JSON, not a stream."""
+    gate = asyncio.Event()
+    started = asyncio.Event()
+    entered = asyncio.Event()
+    upstream = GatedResp([b"data: never\n\n"], gate=gate, entered=entered)
+
+    async def chat(body, slot_id=None, stream=False):
+        started.set()
+        return upstream
+
+    sm.backends[0]["client"].chat_completions = chat
+    task = asyncio.create_task(_chat(sm, "hi", "rid-kill-stream", stream=True))
+    await asyncio.wait_for(started.wait(), 1)
+    # Wait until the prefill is actually reading, so the kill is handled by
+    # the prefetch (not by the dispatch race) and closes the upstream.
+    await asyncio.wait_for(entered.wait(), 1)
+    assert chat_flow.kill_request("rid-kill-stream") is not None
+
+    resp = await asyncio.wait_for(task, 2)
+    assert resp.status_code == 499
+    assert json.loads(resp.body).get("error")
+    assert upstream.closed, "the killed upstream must be closed"
+    _assert_all_free(sm)
+
+
+async def test_kill_wins_over_a_pause_abort():
+    """A kill that lands while a pause is unwinding the work is not lost: the
+    pipeline must answer 499, not retry under a fresh token."""
+    token = chat_flow.bind_kill("rid-race", "m1")
+
+    async def work():
+        raise chat_flow.PausedRetry()
+
+    token.kill()
+    with pytest.raises(chat_flow.RequestKilled):
+        await chat_flow.race_kill(work(), token)
+
+
+async def test_empty_stream_is_an_empty_200(sm, meta_dir):
+    """A backend that closes before any chunk still commits an empty SSE."""
+    async def chat(body, slot_id=None, stream=False):
+        return GatedResp([])
+
+    sm.backends[0]["client"].chat_completions = chat
+    resp = await asyncio.wait_for(_chat(sm, "hi", "rid-empty", stream=True), 2)
+    assert resp.status_code == 200
+    assert await _consume(resp) == b""
     _assert_all_free(sm)
 
 

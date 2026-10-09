@@ -102,7 +102,13 @@ model reload) without cutting in-flight work:
 - Pre-commit work is re-dispatched, not drained: a chat request that has not
   committed a response is interrupted (its slot released) and re-runs from
   scratch after the resume, so it never continues on a stale model id, prefix
-  hash or slot pin. A kill during the hold still works (`POST /proxy/requests/{rid}/kill`).
+  hash or slot pin. For a chat SSE stream the commit point is its **first body
+  byte**: the proxy holds back the client-facing SSE response headers until
+  the first upstream chunk arrives, so a stream still in prefill is
+  re-dispatched the same way (its SSE headers reach the client together with
+  the first token). Pass-through streams are not prefetched: they commit at
+  their headers and only drain. A kill during the hold still works
+  (`POST /proxy/requests/{rid}/kill`).
 - The pause ends on `POST /proxy/resume` or the timer: `PAUSE_DEFAULT_S`
   seconds from activation, capped by `PAUSE_MAX_S` (0 disables the cap). A
   second `POST /proxy/pause` while paused extends the deadline to `now + seconds`.
