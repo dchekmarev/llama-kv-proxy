@@ -64,6 +64,7 @@ TTFT_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30)
 SLOT_WAIT_BUCKETS = (0.001, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60)
 SAVE_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2.5, 10, 30, 120)
 RATIO_BUCKETS = (0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 1.0)
+PAUSE_DRAIN_BUCKETS = (0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300)
 
 requests_total = Counter(
     f"{P}_requests_total",
@@ -187,6 +188,23 @@ backend_scrape_failures_total = Counter(
     ["backend"],
     registry=REGISTRY,
 )
+paused = Gauge(
+    f"{P}_paused",
+    "Proxy pause state (1 paused or draining, 0 running).",
+    registry=REGISTRY,
+)
+pause_total = Counter(
+    f"{P}_pause_total",
+    "Pause lifecycle events.",
+    ["action"],
+    registry=REGISTRY,
+)
+pause_drain_seconds = Histogram(
+    f"{P}_pause_drain_seconds",
+    "Seconds from pause request to activation (drain time).",
+    buckets=PAUSE_DRAIN_BUCKETS,
+    registry=REGISTRY,
+)
 
 # Valid restore-search tiers (restore_tier_total label values).
 TIERS = ("index", "t1_disk", "t2_blocks")
@@ -206,6 +224,7 @@ def reset() -> None:
         stale_meta_drops_total,
         inflight_save_waits_total,
         backend_scrape_failures_total,
+        pause_total,
     ):
         m.clear()
     for h in (
@@ -214,9 +233,10 @@ def reset() -> None:
         restore_ratio,
         slot_wait_seconds,
         save_duration_seconds,
+        pause_drain_seconds,
     ):
         h.clear()
-    for g in (meta_files, meta_bytes, bin_bytes, slots_total, backend_up):
+    for g in (meta_files, meta_bytes, bin_bytes, slots_total, backend_up, paused):
         g.clear()
 
 

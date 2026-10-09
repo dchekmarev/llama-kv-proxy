@@ -19,6 +19,6 @@ the tests patch (``config.META_DIR``, ``promstats.BIN_CACHE_DIR``) is
 patched on the very object the rest of the proxy reads it from.
 """
 
-from . import config, logging_setup, promstats, request_id, version
+from . import config, logging_setup, pause, promstats, request_id, version
 
-__all__ = ["config", "logging_setup", "promstats", "request_id", "version"]
+__all__ = ["config", "logging_setup", "pause", "promstats", "request_id", "version"]

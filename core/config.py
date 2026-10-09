@@ -138,6 +138,14 @@ RETRY_AFTER_S = _env_int("RETRY_AFTER_S", 300)
 # probe, then 502). See README "Backend unavailable".
 HOLD_TIMEOUT = max(0.0, _env_float("HOLD_TIMEOUT", 240))
 
+# Pause API (POST /proxy/pause): stop dispatching new work, drain in-flight
+# committed work, then hold every new request until resume (manual) or until
+# the timer elapses. The timer starts once the drain completes. PAUSE_DEFAULT_S
+# is used when the request omits `seconds`; PAUSE_MAX_S caps a requested value
+# (0 disables the cap). See README "Pause".
+PAUSE_DEFAULT_S = _env_float("PAUSE_DEFAULT_S", 60)
+PAUSE_MAX_S = max(0.0, _env_float("PAUSE_MAX_S", 0))
+
 # Timeout for waiting on a free slot when all slots are busy.
 ACQUIRE_TIMEOUT = _env_float("ACQUIRE_TIMEOUT", 1500)
 

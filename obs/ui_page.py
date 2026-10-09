@@ -74,12 +74,16 @@ button.kill:hover { border-color: var(--red); background: #2a1215; }
 .status-cancelled { color: var(--orange); }
 #slots { grid-column: 1 / -1; }
 .empty { color: var(--dim); padding: 4px 0; }
+#pause-banner { display: none; background: #3a2a00; color: var(--yellow);
+  border: 1px solid var(--yellow); border-radius: 4px; padding: 2px 10px;
+  font-weight: 600; }
 </style>
 </head>
 <body>
 <header>
   <div id="conn"></div>
   <h1>llama-kv-proxy</h1>
+  <div id="pause-banner"></div>
   <span id="clock"></span>
 </header>
 <main>
@@ -281,14 +285,24 @@ $("d-full").onclick = async () => {
   } catch (e) { /* ignore */ }
 };
 
-let STATE = { active: [], history: [], slots: [] };
+function renderPause() {
+  const p = STATE.pause || {};
+  const el = $("pause-banner");
+  if (!p.paused) { el.style.display = "none"; el.textContent = ""; return; }
+  el.style.display = "";
+  const when = p.phase === "draining" ? "draining…"
+    : "until " + new Date((p.expires_at || 0) * 1000).toLocaleTimeString();
+  el.textContent = "PAUSED " + (p.reason ? "(" + p.reason + ") " : "") + when;
+}
+
+let STATE = { active: [], history: [], slots: [], pause: {} };
 async function poll() {
   try {
     const resp = await fetch("/proxy/ui/state");
     if (!resp.ok) throw new Error(resp.status);
     STATE = await resp.json();
     $("conn").classList.add("ok");
-    renderActive(); renderHistory(); renderSlots();
+    renderActive(); renderHistory(); renderSlots(); renderPause();
     if (selected) {
       const r = findReq(selected);
       if (r) renderDetailMeta(r);

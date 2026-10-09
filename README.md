@@ -88,6 +88,34 @@ How a dead or loading backend (refused / black-holed port, 5xx) surfaces:
 - Stream already open when the backend dies: SSE `data: {"error": {"message": "503 service unavailable: stream interrupted: ..."}}`; the prefix matches opencode's retryable patterns, so it retries. A killed request (`killed by operator`) and a stalled consumer are deliberately unmarked — retrying them is wrong.
 - No `Retry-After` on: a backend `4xx` (the status passes through unchanged, the body is re-shaped to `{"error": ...}`; a client fault does not go away on retry), an unexpected proxy bug (`500`), and the slot-exhaustion `503`.
 
+### Pause
+
+`POST /proxy/pause` stops the proxy for a maintenance window (backend restart,
+model reload) without cutting in-flight work:
+
+- Admission closes at once: new chat and pass-through requests hold until the
+  pause ends.
+- Committed work drains first: already-streaming SSE responses, in-flight
+  `.bin` saves and open pass-through streams finish; the pause activates (and
+  its timer starts) only once they are done. The call blocks until activation
+  and returns the state.
+- Pre-commit work is re-dispatched, not drained: a chat request that has not
+  committed a response is interrupted (its slot released) and re-runs from
+  scratch after the resume, so it never continues on a stale model id, prefix
+  hash or slot pin. A kill during the hold still works (`POST /proxy/requests/{rid}/kill`).
+- The pause ends on `POST /proxy/resume` or the timer: `PAUSE_DEFAULT_S`
+  seconds from activation, capped by `PAUSE_MAX_S` (0 disables the cap). A
+  second `POST /proxy/pause` while paused extends the deadline to `now + seconds`.
+- Background jobs (slot poll, eviction, `.bin`/index reconciliation) hold
+  while paused; the first slot poll runs immediately after resume. `/metrics`
+  returns only the proxy half during a pause (a backend may be mid-restart).
+- `GET /proxy/pause` reports the state (`off` / `draining` / `active`); it is
+  also in `GET /proxy/health` and the dashboard snapshot (banner).
+
+Body (optional JSON object): `{"seconds": <number>, "reason": "<string>"}`.
+While held, a request connection sends no bytes, so a client's own request
+timeout must outlast the pause (same caveat as `HOLD_TIMEOUT`).
+
 ## Quick start
 
 1) Start llama.cpp (https://github.com/ggml-org/llama.cpp) with slots and a cache directory:
@@ -177,6 +205,8 @@ All parameters are environment variables; defaults in parentheses.
 | `RETRY_AFTER_S` | `300` | `Retry-After` header value (seconds) on 502 upstream-failure responses, so a retrying client waits out a backend outage instead of hammering the proxy. |
 | `HOLD_TIMEOUT` | `240` | Max seconds a request holds its connection (and its slot) while the picked backend is unreachable or unhealthy (5xx on `/health`, e.g. model loading); 502 + `Retry-After` after. 0 disables the wait. |
 | `ACQUIRE_TIMEOUT` | `1500` | Maximum wait for a free slot, seconds. |
+| `PAUSE_DEFAULT_S` | `60` | Pause length when `POST /proxy/pause` carries no/absent `seconds`, counted from activation. |
+| `PAUSE_MAX_S` | `0` | Upper bound on the pause length, seconds; `0` disables the cap. |
 | `SAVE_WAIT_TIMEOUT` | `30` | Max seconds a big request waits for an in-flight save of a prefix of its own conversation before giving up on the restore (the previous message's meta lands only after its `.bin` write). `0` disables the wait. |
 | `MODEL_ID` | `llama.cpp` | Fallback model id returned by `/v1/models` when the backend is unavailable, and the namespace of a model-less request whose backend id is unknown. It is also the cache namespace of a restore, so two different models sharing it can restore each other's KV: change it when you swap the served model. Client `model` aliases are mapped through the backend preset table instead (see *Model aliases*). |
 | `MODEL_ID_TTL` | `60` | Backend model-id cache TTL, seconds. |
@@ -218,11 +248,14 @@ All parameters are environment variables; defaults in parentheses.
 | GET | `/v1/models` | Union of the backends' model lists (deduped by id); falls back to `MODEL_ID` when no backend reports any model. |
 | GET | `/version` | Proxy name and version (single source of truth: `core/version.py`). |
 | GET | `/proxy/slots` | Aggregated slot state across all backends (state, n_ctx, total_tokens, LRU mark). |
-| GET | `/proxy/health` | Backend availability probe plus slot state. |
+| GET | `/proxy/health` | Backend availability probe plus slot state and the pause snapshot. |
 | GET | `/proxy/requests` | The requests that can be killed, each with its stage (`queued` / `generating`). Works with the dashboard off, unlike `/proxy/ui/state`. |
 | POST | `/proxy/requests/{rid}/kill` | Kill one request by its correlation id, queued or generating. See [Killing a request](#killing-a-request). |
+| POST | `/proxy/pause` | Pause the proxy (body `{"seconds", "reason"}` optional); blocks until the drain finishes, then returns the state. See [Pause](#pause). |
+| GET | `/proxy/pause` | Current pause state (`paused`, `activated`, `phase`, `reason`, `seconds`, `activity`, `activated_at`, `expires_at`). |
+| POST | `/proxy/resume` | End a pause immediately. |
 | GET | `/proxy/ui/` | Live dashboard (self-contained HTML page): active requests with live token tails, recent history, slot grid, a kill button per active request. |
-| GET | `/proxy/ui/state` | JSON snapshot: active requests (with token tails), history, slots with `busy_rid`. |
+| GET | `/proxy/ui/state` | JSON snapshot: active requests (with token tails), history, slots with `busy_rid`, pause state. |
 | GET | `/proxy/ui/request/{rid}` | Full prompt transcript of an in-flight or recent (history) request. |
 | GET | `/proxy/ui/events` | SSE stream for the dashboard: initial snapshot, then token batches and start/slot/end events (idle stream stays open without heartbeat frames; the page also polls `/proxy/ui/state`). |
 | GET | `/cache/stats` | Cache file count, total size, hit/miss counters. |
@@ -255,6 +288,9 @@ All parameters are environment variables; defaults in parentheses.
 | `llama_kv_proxy_stale_meta_drops_total` | counter | `model` | Stale metas dropped after a restore reported the `.bin` missing. |
 | `llama_kv_proxy_inflight_save_waits_total` | counter | `model`, `result` | Continuations that waited for an in-flight save: `hit` / `miss`. |
 | `llama_kv_proxy_backend_scrape_failures_total` | counter | `backend` | Backend `/metrics` scrape failures. |
+| `llama_kv_proxy_paused` | gauge | — | 1 from the pause request until it ends (draining and active). |
+| `llama_kv_proxy_pause_total` | counter | `action` | Pause transitions: `activate`, `extend`, `resume`, `expire`. |
+| `llama_kv_proxy_pause_drain_seconds` | histogram | — | Time from the pause request to activation (drain of committed work). |
 
 Label cardinality is bounded by design: `model`, `backend`, `stream`, `outcome`, `tier`, `reason` and `state` are small fixed sets; request ids and cache keys never appear in labels. A `model` the proxy could not resolve to a real model id is counted under `model="unresolved"` rather than under the client's own string, so a client cannot mint a new time series per request by varying that field.
 
@@ -268,7 +304,7 @@ as a flat top-level module, and the layer below never imports the one above:
 |---|---|
 | `app/` | FastAPI app: lifespan, request-id middleware, the thin `/v1/chat/completions` endpoint, pass-through, background loops (eviction, slot polling, `.bin` cleanup/reconciliation), non-chat endpoints. `python -m app` is the uvicorn entry point |
 | `chat_flow/` | Chat request pipeline: effective-model resolution, cache key, restore selection, slot acquisition, backend dispatch, streaming reader, save/meta/LRU follow-up |
-| `core/` | Cross-cutting infrastructure: `config` (environment configuration, no import side effects; `init_runtime()` validates and creates the cache dirs at startup), `logging_setup` (root logger with the request-id filter), `request_id` (per-request correlation id: ContextVar + log filter), `promstats` (proxy-level `llama_kv_proxy_*` metrics on a dedicated registry, plus the storage gauges), `version` (single source of truth for the proxy version) |
+| `core/` | Cross-cutting infrastructure: `config` (environment configuration, no import side effects; `init_runtime()` validates and creates the cache dirs at startup), `logging_setup` (root logger with the request-id filter), `request_id` (per-request correlation id: ContextVar + log filter), `promstats` (proxy-level `llama_kv_proxy_*` metrics on a dedicated registry, plus the storage gauges), `pause` (in-memory pause controller: admission hold + drain of committed work), `version` (single source of truth for the proxy version) |
 | `backend/` | `llama_client`: HTTP client for llama.cpp (chat, slot save/restore/erase, models, metrics). `slot_manager`: slot pools, LRU marks, per-slot locks, restore/save |
 | `hashing/` | Prefix/block hashing, meta files, the in-RAM restore index, two-tier matching, eviction |
 | `cache/` | Direct `.bin` cleanup, LRU size cap, meta/`.bin` reconciliation |
@@ -292,7 +328,7 @@ CI (`.github/workflows/ci.yml`) runs the same checks (ruff, mypy, pytest) on eve
 
 ## Security
 
-The proxy has **no authentication**. Anyone who can reach the port can read and send chat requests, wipe the cache (`POST /cache/clear` — POST only, never a GET, so a page cannot trigger it), consume all slots, read the live dashboard (which serves prompt transcripts of recent requests), and reach every native llama.cpp endpoint through the pass-through.
+The proxy has **no authentication**. Anyone who can reach the port can read and send chat requests, wipe the cache (`POST /cache/clear` — POST only, never a GET, so a page cannot trigger it), pause the proxy (`POST /proxy/pause`, also POST only), consume all slots, read the live dashboard (which serves prompt transcripts of recent requests), and reach every native llama.cpp endpoint through the pass-through.
 
 Run it on a trusted network (single host, private LAN, tailnet) or behind an authenticating reverse proxy. Before exposing the port further:
 

@@ -133,6 +133,7 @@ from ._kill import (
 )
 from ._lru import _purge_backend_files, _schedule_lru_check
 from ._model import _resolve_effective_model
+from ._pause import PausedRetry, race_pause
 from ._restore import (
     _find_restore_candidate,
     _finish_inflight_save,
@@ -191,6 +192,7 @@ __all__ = [
     "JSONResponse",
     "KillToken",
     "LlamaClient",
+    "PausedRetry",
     "RequestKilled",
     "Response",
     "SlotManager",
@@ -239,6 +241,7 @@ __all__ = [
     "logging",
     "promstats",
     "race_kill",
+    "race_pause",
     "reqlog",
     "request_id_var",
     "reset_kills",

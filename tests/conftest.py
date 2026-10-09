@@ -16,6 +16,7 @@ import chat_flow
 import hashing as hs
 from backend import slot_manager as sm_module
 from backend.slot_manager import SlotManager
+from core import pause as pause_mod
 from core import promstats
 from obs import ui as ui_obs
 
@@ -64,6 +65,14 @@ def _clean_ui_registry():
     if task is not None:
         task.cancel()
         reg._broadcaster = None
+
+
+@pytest.fixture(autouse=True)
+def _clean_pause():
+    """Reset the process-wide pause state between tests."""
+    pause_mod.reset()
+    yield
+    pause_mod.reset()
 
 
 @pytest.fixture(autouse=True)

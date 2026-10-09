@@ -22,6 +22,7 @@ import app as app_pkg
 import chat_flow
 import hashing
 from cache import bin_cache
+from core import pause as pause_mod
 from core import promstats
 from core import version as version_info
 from core.request_id import sanitize_request_id
@@ -135,6 +136,7 @@ async def health() -> dict[str, Any]:
     return {
         "ok": all(backend.get("ok") for backend in backends),
         "version": version_info.__version__,
+        "paused": pause_mod.snapshot(),
         "backends": backends,
         "slots": app_pkg.app.state.sm.aggregated_state(),
     }
@@ -176,6 +178,55 @@ async def kill_request(rid: str) -> Response:
     return JSONResponse({"rid": rid, "killed": True, "stage": stage})
 
 
+# --- pause ---------------------------------------------------------------------
+
+
+@app_pkg.app.post("/proxy/pause")
+async def pause_request(request: Request) -> Response:
+    """Pause the proxy: hold new work, drain in-flight work, then auto-resume.
+
+    Body (optional JSON object): ``{"seconds": <number>, "reason": "<string>"}``.
+    ``seconds`` defaults to PAUSE_DEFAULT_S and is capped by PAUSE_MAX_S (when
+    non-zero). The call blocks until the drain completes and the pause
+    activates, then returns the pause state; a second call while paused
+    extends the deadline to ``now + seconds``. No authentication: trusted
+    networks only.
+    """
+    try:
+        raw = await request.body()
+        data = json.loads(raw) if raw else {}
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse({"error": f"invalid JSON body: {e}"}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse(
+            {"error": "request body must be a JSON object"}, status_code=400
+        )
+    seconds = data.get("seconds")
+    if seconds is not None and (
+        isinstance(seconds, bool) or not isinstance(seconds, (int, float))
+    ):
+        return JSONResponse({"error": "'seconds' must be a number"}, status_code=400)
+    reason = data.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        return JSONResponse({"error": "'reason' must be a string"}, status_code=400)
+    state = await pause_mod.request(pause_mod.clamp_seconds(seconds), reason)
+    log.info("pause_request seconds=%s reason=%s", seconds, reason)
+    return JSONResponse(state)
+
+
+@app_pkg.app.post("/proxy/resume")
+async def resume_request() -> dict[str, Any]:
+    """End a pause now (manual resume). Idempotent."""
+    log.info("pause_resume")
+    return pause_mod.resume()
+
+
+@app_pkg.app.get("/proxy/pause")
+async def pause_state() -> dict[str, Any]:
+    """The current pause state: phase off / draining / active."""
+    return pause_mod.snapshot()
+
+
 # --- cache administration -----------------------------------------------------
 
 
@@ -215,7 +266,14 @@ async def metrics_endpoint(model: str | None = None) -> Response:
     samples by the model whose /metrics was scraped).
     """
     proxy_text = await asyncio.to_thread(promstats.render, model)
-    backend_text = await metrics.collect(app_pkg.app.state.clients, model)
+    # While paused the backends are being restarted/reloaded: scraping their
+    # /metrics would only block on a dead target, so only the proxy half is
+    # returned. Calls in flight when the pause landed still get both halves.
+    backend_text = (
+        ""
+        if pause_mod.is_paused()
+        else await metrics.collect(app_pkg.app.state.clients, model)
+    )
     return Response(
         content=proxy_text + backend_text, media_type=_PROMETHEUS_MEDIA_TYPE
     )
@@ -251,7 +309,11 @@ def _ui_slots() -> list[dict[str, Any]]:
 
 def _ui_snapshot() -> dict[str, Any]:
     """The whole dashboard state: in-flight requests, history, slot grid."""
-    return {**ui_obs.registry.snapshot(), "slots": _ui_slots()}
+    return {
+        **ui_obs.registry.snapshot(),
+        "slots": _ui_slots(),
+        "pause": pause_mod.snapshot(),
+    }
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -379,6 +441,22 @@ async def _iter_upstream(upstream: Any) -> AsyncIterator[bytes]:
         await upstream.aclose()
 
 
+async def _iter_passthrough(upstream: Any) -> AsyncIterator[bytes]:
+    """``_iter_upstream`` bracketed as a pause-drain unit.
+
+    The activity begins when the body starts streaming and ends when the
+    stream closes, so a pause that lands mid-stream waits for it instead of
+    cutting it. A pass-through admitted just before the pause starts draining
+    once it yields its first chunk.
+    """
+    pause_mod.activity_begin()
+    try:
+        async for chunk in _iter_upstream(upstream):
+            yield chunk
+    finally:
+        pause_mod.activity_end()
+
+
 @app_pkg.app.api_route(
     "/{path:path}",
     methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
@@ -395,6 +473,9 @@ async def passthrough(path: str, request: Request) -> Response:
     transport failure mid-stream ends the response cleanly.
     """
     client = app_pkg.app.state.clients[0]
+    # Same admission hold as the chat path: a request that arrives during a
+    # pause waits for it instead of touching a backend that is restarting.
+    await pause_mod.wait_not_paused()
     # Same hold as the chat path: wait for the backend to serve before opening
     # the upstream (no kill token: the pass-through is not killable).
     if not await chat_flow.backend_gate(client, None):
@@ -417,7 +498,7 @@ async def passthrough(path: str, request: Request) -> Response:
         log.warning("passthrough_upstream_error path=%s: %s", path, e)
         return chat_flow._error_response({"error": str(e)}, 502)
     return StreamingResponse(
-        _iter_upstream(upstream),
+        _iter_passthrough(upstream),
         status_code=upstream.status_code,
         headers=_upstream_headers(upstream.headers),
     )

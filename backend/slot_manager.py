@@ -42,6 +42,7 @@ from collections import deque
 from collections.abc import Callable
 
 from backend.llama_client import RESTORE_ERROR
+from core import pause as pause_mod
 from core import promstats
 from core.config import BACKENDS, SKIP_RESTORE_SAME_SLOT, SLOT_FRESHEN_INTERVAL_S
 
@@ -324,6 +325,11 @@ class SlotManager:
         release it either (the request still runs on that slot).
         """
         g, lock = await self._take_slot(model)
+        # Occupying a slot is a unit of committed work for the pause drain:
+        # the slot is held until release() returns it, whether that happens
+        # through the pipeline's finally, the stream reader or a background
+        # save. release() is the single point that ends the unit.
+        pause_mod.activity_begin()
         # Occupying a slot is its "last used" moment, even for a small
         # request that never saves: it is the LRU order the next pick uses.
         self._last_used[g] = time.time()
@@ -374,6 +380,10 @@ class SlotManager:
         must release exactly once per acquire: a second release would free
         a lock another request has acquired in the meantime.
         """
+        # End the pause-drain unit this slot opened in acquire_for_request.
+        # Idempotent: activity_end clamps at zero, so a slot released without
+        # a paired acquire (a test) cannot drive the counter negative.
+        pause_mod.activity_end()
         lock = self._locks.get(g)
         if lock is not None and lock.locked():
             lock.release()

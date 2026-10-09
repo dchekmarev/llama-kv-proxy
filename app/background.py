@@ -11,6 +11,7 @@ from typing import Any, cast
 import app as app_pkg
 import hashing
 from cache import bin_cache
+from core import pause as pause_mod
 from core import promstats
 
 log = logging.getLogger(__name__)
@@ -161,6 +162,9 @@ async def _poll_slots_loop() -> None:
     if app_pkg.SLOT_POLL_INTERVAL_S <= 0:
         return
     while True:
+        # Hold the discovery pass while paused: a restart may be in progress,
+        # and the wait makes the first pass after resume an immediate freshen.
+        await pause_mod.wait_not_paused()
         try:
             await app_pkg._poll_slots()
         except asyncio.CancelledError:
@@ -203,6 +207,7 @@ async def _eviction_loop() -> None:
     if app_pkg.EVICT_INTERVAL_S <= 0:
         return
     while True:
+        await pause_mod.wait_not_paused()
         try:
             await app_pkg._run_eviction()
         except asyncio.CancelledError:
@@ -223,6 +228,7 @@ async def _bin_reconcile_loop() -> None:
         return
     while True:
         await asyncio.sleep(app_pkg.BIN_RECONCILE_INTERVAL_S)
+        await pause_mod.wait_not_paused()
         if not app_pkg.BIN_CACHE_DIR:
             continue
         try:
@@ -252,6 +258,7 @@ async def _meta_index_reconcile_loop() -> None:
     """
     while True:
         await asyncio.sleep(app_pkg.META_INDEX_RECONCILE_INTERVAL_S)
+        await pause_mod.wait_not_paused()
         try:
             dropped = await hashing.reconcile_index_async()
         except asyncio.CancelledError:

@@ -12,6 +12,7 @@ import chat_flow as chat_flow_pkg
 import hashing as hs
 from backend.llama_client import LlamaClient
 from backend.slot_manager import GSlot, SlotManager
+from core import pause as pause_mod
 from core import promstats
 from core.request_id import request_id_var
 from obs import reqlog
@@ -25,15 +26,39 @@ log = _state.log
 async def chat_flow(
     sm: SlotManager, clients: list[LlamaClient], data: dict
 ) -> Response:
-    """Run the chat request pipeline for an already-parsed JSON body.
+    """Run the chat pipeline for an already-parsed JSON body.
 
-    `sm` and `clients` are the app's slot manager and backend clients (read
-    from app.state by the endpoint); `data` is the validated request body.
-    Returns the FastAPI response (JSON or streaming).
+    Wraps :func:`_chat_once` in the pause retry loop: a pause that lands
+    before the attempt committed a response aborts it (PausedRetry), the loop
+    waits for the pause to end and re-runs the attempt from scratch, so a
+    backend restart or model reload under the pause never leaves a request on
+    stale state. The request group id, timestamp and request log are created
+    once, so a retry does not duplicate them.
     """
     t0 = time.time()
     t0_mono = time.monotonic()
+    rid = request_id_var.get()
+    ts = reqlog.new_group_ts()
+    reqlog.log_file("request", rid, ts, data)
+    while True:
+        await pause_mod.wait_not_paused()
+        try:
+            return await _chat_once(sm, clients, data, rid, ts, t0, t0_mono)
+        except chat_flow_pkg.PausedRetry:
+            log.info("chat_paused_retry rid=%s", rid)
+            continue
 
+
+async def _chat_once(
+    sm: SlotManager,
+    clients: list[LlamaClient],
+    data: dict,
+    rid: str,
+    ts: str,
+    t0: float,
+    t0_mono: float,
+) -> Response:
+    """One attempt of the pipeline (re-run from scratch after a pause)."""
     messages: list[dict] = data.get("messages") or []
     stream = bool(data.get("stream", False))
     # A client opts a request out of the KV cache by sending cache_prompt:false
@@ -41,13 +66,6 @@ async def chat_flow(
     # no restore search, no pre-chat erase, and no save of bin/meta. Absent or
     # true keeps the normal big/small cache behavior.
     no_cache = data.get("cache_prompt") is False
-
-    # Request group id: the correlation id (X-Request-ID or generated) plus a
-    # millisecond timestamp; every file of this request shares the prefix.
-    # The request body is logged up front so even failed requests are kept.
-    rid = request_id_var.get()
-    ts = reqlog.new_group_ts()
-    reqlog.log_file("request", rid, ts, data)
 
     client_model = data.get("model") or None
     effective_model, no_cache = await chat_flow_pkg._resolve_effective_model(
@@ -169,15 +187,22 @@ async def chat_flow(
         try:
             g, _lock, restored, used_key = await asyncio.wait_for(
                 chat_flow_pkg.race_kill(
-                    sm.acquire_for_request(
-                        effective_model,
-                        restore_key if do_cache else None,
-                        resolve_restore_key=chat_flow_pkg._resolve_restore_key if do_cache else None,
+                    chat_flow_pkg.race_pause(
+                        sm.acquire_for_request(
+                            effective_model,
+                            restore_key if do_cache else None,
+                            resolve_restore_key=chat_flow_pkg._resolve_restore_key if do_cache else None,
+                        ),
                     ),
                     kill_token,
                 ),
                 timeout=chat_flow_pkg.ACQUIRE_TIMEOUT,
             )
+        except chat_flow_pkg.PausedRetry:
+            # The pause aborted the wait before a slot was handed over (the
+            # cancelled acquire owns any slot it had touched). Let the retry
+            # loop re-run once the pause is over.
+            raise
         except TimeoutError:
             log.error(
                 "acquire_timeout is_big=%s restore_key=%s",
@@ -237,7 +262,9 @@ async def chat_flow(
         # anyway, and releasing would only move the wait into the acquire
         # queue. A kill during the hold unwinds through the RequestKilled
         # handler below (499).
-        if not await chat_flow_pkg.backend_gate(client, kill_token):
+        if not await chat_flow_pkg.race_pause(
+            chat_flow_pkg.backend_gate(client, kill_token)
+        ):
             log.error("hold_timeout g=%s key=%s", g, key[:16])
             promstats.requests_total.labels(
                 model=metric_model, stream="true" if stream else "false",
@@ -281,10 +308,12 @@ async def chat_flow(
 
         if stream:
             resp = await chat_flow_pkg.race_kill(
-                client.chat_completions(
-                    body,
-                    slot_id=slot_id,
-                    stream=True,
+                chat_flow_pkg.race_pause(
+                    client.chat_completions(
+                        body,
+                        slot_id=slot_id,
+                        stream=True,
+                    ),
                 ),
                 kill_token,
             )
@@ -341,10 +370,12 @@ async def chat_flow(
 
         else:
             out = await chat_flow_pkg.race_kill(
-                client.chat_completions(
-                    body,
-                    slot_id=slot_id,
-                    stream=False,
+                chat_flow_pkg.race_pause(
+                    client.chat_completions(
+                        body,
+                        slot_id=slot_id,
+                        stream=False,
+                    ),
                 ),
                 kill_token,
             )
@@ -476,6 +507,12 @@ async def chat_flow(
         except Exception:
             log.debug("erase_after_kill_failed g=%s", g, exc_info=True)
         return _killed(g, used_key)
+    except chat_flow_pkg.PausedRetry:
+        # A pause landed after the slot was acquired but before the response
+        # was committed: unwind so the wrapper can re-dispatch. The finally
+        # below gives the slot back (no save), and no outcome is recorded --
+        # the retry records the real one.
+        raise
     except httpx.HTTPError as e:
         # A connect/timeout failure: no backend response at all, so this is a
         # genuine upstream failure (502 + Retry-After), not a proxy bug (500).
