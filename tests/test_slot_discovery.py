@@ -124,6 +124,7 @@ async def test_poll_slots_skips_pool_for_unknown_model(sm):
     that would merge every model into one namespace and orphan the cache bins
     written under it; the previous pool is kept until the id is resolvable."""
     client = MagicMock()
+    client.probe = AsyncMock(return_value=True)
     client.is_router = AsyncMock(return_value=False)
     client.get_model_id = AsyncMock(return_value="unknown")
     client.get_slots = AsyncMock(return_value=[_slot(0)])
@@ -140,6 +141,7 @@ async def test_poll_slots_keeps_previous_pool_when_id_unknown(sm):
     """A transient discovery failure must not wipe the existing pool: requests
     keep their slots, and routing stays correct until the id resolves again."""
     client = MagicMock()
+    client.probe = AsyncMock(return_value=True)
     client.is_router = AsyncMock(return_value=False)
     client.get_model_id = AsyncMock(return_value="unknown")
     client.get_slots = AsyncMock(return_value=[_slot(0)])
@@ -156,6 +158,7 @@ async def test_poll_slots_keeps_previous_pool_when_id_unknown(sm):
 async def test_poll_slots_plain_uses_resolved_model(sm):
     """The plain path still keys the pool by the resolved backend model id."""
     client = MagicMock()
+    client.probe = AsyncMock(return_value=True)
     client.is_router = AsyncMock(return_value=False)
     client.get_model_id = AsyncMock(return_value="m1")
     client.get_slots = AsyncMock(return_value=[_slot(0), _slot(1)])

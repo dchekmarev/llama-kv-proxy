@@ -15,6 +15,7 @@ import gc
 import json
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 import chat_flow
@@ -25,16 +26,20 @@ from backend.slot_manager import SlotManager
 class FakeResp:
     """Mimics the httpx.Response parts used by the reader: aiter_raw + aclose."""
 
-    def __init__(self, chunks, delay=0.0, fail_after=None):
+    def __init__(self, chunks, delay=0.0, fail_after=None, fail_exc=None):
         self._chunks = list(chunks)
         self._delay = delay
         self._fail_after = fail_after
+        self._fail_exc = fail_exc
         self.closed = False
 
     async def aiter_raw(self):
         for i, c in enumerate(self._chunks):
             if self._fail_after is not None and i >= self._fail_after:
-                raise RuntimeError("backend stream error")
+                # A mid-stream backend death surfaces as an httpx transport
+                # error (connection reset / peer closed / read timeout).
+                exc_cls = self._fail_exc or httpx.ReadError
+                raise exc_cls("backend stream error")
             if self._delay:
                 await asyncio.sleep(self._delay)
             yield c
@@ -48,6 +53,7 @@ def sm(monkeypatch):
     monkeypatch.setattr(sm_module, "BACKENDS", [{"url": "http://be", "n_slots": 2}])
     manager = SlotManager()
     client = MagicMock()
+    client.probe = AsyncMock(return_value=True)
     client.save_slot = AsyncMock(return_value=True)
     manager.set_clients([client])
     return manager
@@ -189,9 +195,76 @@ async def test_backend_error_mid_stream_releases_slot(sm, no_meta):
     assert err.startswith(b"data: ") and err.endswith(b"\n\n")
     payload = json.loads(err[len(b"data: "):-2])
     assert "error" in payload
-    assert "stream interrupted" in payload["error"]
+    assert "stream interrupted" in payload["error"]["message"]
+    assert payload["error"]["message"].startswith("503 service unavailable"), (
+        "a backend failure must be marked retryable for opencode-style clients"
+    )
     assert resp.closed
     assert not lock.locked(), "slot must be released when backend stream errors"
+
+
+@pytest.mark.asyncio
+async def test_read_timeout_mid_stream_is_marked_retryable(sm, no_meta):
+    """An httpx.ReadTimeout (backend stopped answering mid-stream) is an
+    httpx.HTTPError like any transport failure: the SSE error must carry the
+    retryable "503 service unavailable" marker, so narrowing the isinstance
+    gate in _stream.py regresses loudly here."""
+    g = (0, "model", 0)
+    lock = await _acquire(sm, g)
+    resp = FakeResp([b"a", b"b"], fail_after=1, fail_exc=httpx.ReadTimeout)
+
+    gen = await chat_flow.start_stream_task(
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+    )
+
+    received = [c async for c in gen]
+
+    assert received[0] == b"a"
+    payload = json.loads(received[1][len(b"data: "):-2])
+    assert payload["error"]["message"].startswith("503 service unavailable")
+    assert resp.closed
+    assert not lock.locked()
+
+
+class ProxyBugResp:
+    """Reader-side proxy bug (not a transport error): aiter_raw raises a
+    plain RuntimeError after the first chunk."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.closed = False
+
+    async def aiter_raw(self):
+        for i, c in enumerate(self._chunks):
+            if i == 1:
+                raise RuntimeError("proxy internal bug")
+            yield c
+
+    async def aclose(self):
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_proxy_bug_mid_stream_is_not_marked_retryable(sm, no_meta):
+    """A proxy-internal error is not the backend's fault: the SSE error event
+    must still fire (the client has to see the truncation) but without the
+    "503 service unavailable" marker, mirroring the non-stream 500 policy."""
+    g = (0, "model", 0)
+    lock = await _acquire(sm, g)
+    resp = ProxyBugResp([b"a", b"b"])
+
+    gen = await chat_flow.start_stream_task(
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+    )
+
+    received = [c async for c in gen]
+
+    assert received[0] == b"a"
+    payload = json.loads(received[1][len(b"data: "):-2])
+    assert "stream interrupted" in payload["error"]["message"]
+    assert "503 service unavailable" not in payload["error"]["message"]
+    assert resp.closed
+    assert not lock.locked()
 
 
 class CancelResp:
@@ -237,7 +310,10 @@ async def test_backend_cancel_mid_stream_emits_error_event(sm, no_meta):
     assert err.startswith(b"data: ") and err.endswith(b"\n\n")
     payload = json.loads(err[len(b"data: "):-2])
     assert "error" in payload
-    assert "stream interrupted" in payload["error"]
+    assert "stream interrupted" in payload["error"]["message"]
+    assert payload["error"]["message"].startswith("503 service unavailable"), (
+        "a backend cancel is a backend failure: mark it retryable"
+    )
     assert resp.closed
     assert not lock.locked(), "slot must be released when backend cancels the stream"
 
@@ -550,7 +626,10 @@ async def test_put_timeout_emits_error_event_before_sentinel(sm, no_meta, monkey
     )
     payload = json.loads(err[len(b"data: "):-2])
     assert "error" in payload
-    assert "stream interrupted" in payload["error"]
+    assert "stream interrupted" in payload["error"]["message"]
+    assert "503 service unavailable" not in payload["error"]["message"], (
+        "a stalled consumer is a client-side problem: not marked retryable"
+    )
 
 
 @pytest.mark.asyncio

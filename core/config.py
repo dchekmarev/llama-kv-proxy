@@ -4,7 +4,7 @@
 Unified configuration for llama-kv-proxy:
 - BACKENDS: [{"url": "...", "n_slots": N}]
 - WORDS_PER_BLOCK, BIG_THRESHOLD_WORDS, LCP_TH
-- PORT, REQUEST_TIMEOUT, MODEL_ID
+- PORT, REQUEST_TIMEOUT, CONNECT_TIMEOUT, RETRY_AFTER_S, HOLD_TIMEOUT, MODEL_ID
 
 This module only reads the environment: it creates no directories and
 configures no logging at import time. Call init_runtime() at startup.
@@ -116,8 +116,27 @@ LCP_TH = _env_float("LCP_TH", 0.6)
 APP_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 META_DIR = os.path.join(APP_DIR, os.getenv("META_DIR", "kv_meta"))
 
-# HTTP timeout
+# HTTP timeout (read/write/pool). The connect phase is CONNECT_TIMEOUT.
 REQUEST_TIMEOUT = _env_float("REQUEST_TIMEOUT", 1500)
+
+# Connect-phase timeout, seconds: a refused connection (or a SYN-dropping
+# black hole) must fail fast and surface as a 502 + Retry-After instead of
+# holding the request (and its slot) for the whole REQUEST_TIMEOUT. A port
+# that accepts and then never answers is the read phase, bounded by
+# REQUEST_TIMEOUT.
+CONNECT_TIMEOUT = _env_float("CONNECT_TIMEOUT", 10)
+
+# Retry-After header value (seconds) on 502 upstream-failure responses: a
+# retrying client waits out a backend outage (down, restarting, reloading)
+# instead of hammering the proxy. See README "Backend unavailable".
+RETRY_AFTER_S = _env_int("RETRY_AFTER_S", 300)
+
+# Max seconds a request holds its connection (and its slot) while the picked
+# backend is unreachable or unhealthy (5xx on /health, e.g. model loading):
+# the proxy waits for the backend to come back instead of bouncing the client
+# with 502 + Retry-After right away. 0 (or negative) disables the wait (one
+# probe, then 502). See README "Backend unavailable".
+HOLD_TIMEOUT = max(0.0, _env_float("HOLD_TIMEOUT", 240))
 
 # Timeout for waiting on a free slot when all slots are busy.
 ACQUIRE_TIMEOUT = _env_float("ACQUIRE_TIMEOUT", 1500)

@@ -5,7 +5,7 @@
 Holds the /v1/chat/completions request pipeline: effective-model resolution,
 cache-key computation, restore-candidate selection, slot acquisition, dispatch
 to the backend, and the save/meta/LRU follow-up. The FastAPI endpoint in
-app.py only parses the JSON body and delegates here.
+app/routes.py only parses the JSON body and delegates here.
 
 Additionally:
 
@@ -25,8 +25,11 @@ Additionally:
     * a sentinel None is pushed into the queue (with bounded wait) after the
       slot is released or handed off;
     * on a mid-stream backend error the reader pushes an SSE error event
-      (data: {"error": "stream interrupted: ..."}) before the sentinel, so
-      the client can distinguish a truncated stream from a normal one;
+      (data: {"error": {"message": "..."}}) before the sentinel, so
+      the client can distinguish a truncated stream from a normal one; a
+      backend failure is marked with a "503 service unavailable" prefix so a
+      retrying client (opencode) retries it, while a kill or a stalled
+      consumer is not marked retryable;
     * when the generator is closed (client disconnect) the reader is
       cancelled;
     * reader tasks are kept by strong references (_READER_TASKS) so they are
@@ -67,11 +70,13 @@ from core.config import (
     BIN_CACHE_DIR,
     BIN_CACHE_MAX_MB,
     ERASE_BEFORE_CHAT,
+    HOLD_TIMEOUT,
     LCP_TH,
     MIN_BIN_SIZE_VALID,
     MODEL_ID,
     REASONING_IN_KEY,
     RENDER_CTX_FIELDS,
+    RETRY_AFTER_S,
     SAVE_WAIT_TIMEOUT,
     WORDS_PER_BLOCK,
 )
@@ -91,11 +96,16 @@ from ._content import (
 )
 from ._diagnostics import (
     _emit_decision,
+    _error_response,
     _new_decision,
     _provider_error_status,
     _record_tokens,
     _set_save_outcome,
     _snapshot_slot,
+)
+from ._hold import (
+    HOLD_PROBE_INTERVAL_S,
+    backend_gate,
 )
 from ._kill import (
     STAGE_GENERATING,
@@ -155,12 +165,15 @@ __all__ = [
     "BIN_CACHE_DIR",
     "BIN_CACHE_MAX_MB",
     "ERASE_BEFORE_CHAT",
+    "HOLD_PROBE_INTERVAL_S",
+    "HOLD_TIMEOUT",
     "LCP_TH",
     "MIN_BIN_SIZE_VALID",
     "MODEL_ID",
     "REASONING_IN_KEY",
     "RENDER_CTX_FIELDS",
     "RESTORE_MISSING",
+    "RETRY_AFTER_S",
     "SAVE_WAIT_TIMEOUT",
     "STAGE_GENERATING",
     "STAGE_QUEUED",
@@ -186,6 +199,7 @@ __all__ = [
     "_assistant_content",
     "_background_save",
     "_emit_decision",
+    "_error_response",
     "_find_restore_candidate",
     "_finish_inflight_save",
     "_log_prefix_group",
@@ -212,6 +226,7 @@ __all__ = [
     "_wait_for_inflight_save",
     "active_kills",
     "asyncio",
+    "backend_gate",
     "bin_cache",
     "bind_kill",
     "chat_flow",

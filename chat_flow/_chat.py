@@ -212,6 +212,10 @@ async def chat_flow(
     # A streaming request stays killable after this function returns: the
     # reader task owns the slot from here on and unregisters the token itself.
     stream_handed_off = False
+    # False until the backend gate passes: a kill that lands during the hold
+    # must not touch the (by definition not serving) backend -- the erase
+    # would only block up to CONNECT_TIMEOUT before the 499.
+    gate_passed = False
     try:
         promstats.slot_wait_seconds.labels(model=metric_model).observe(
             time.monotonic() - t_acq
@@ -226,6 +230,25 @@ async def chat_flow(
         decision["slot"] = {"backend": be_id, "model": effective_model, "id": slot_id}
         ui_obs.req_slot(rid, be_id, effective_model, slot_id)
         kill_token.stage = chat_flow_pkg.STAGE_GENERATING
+        # Hold the connection while the picked backend is down or still
+        # loading (bounded by HOLD_TIMEOUT) instead of bouncing the client
+        # with 502 + Retry-After right away; the slot stays held for the
+        # whole wait -- while the backend is down its slots are useless
+        # anyway, and releasing would only move the wait into the acquire
+        # queue. A kill during the hold unwinds through the RequestKilled
+        # handler below (499).
+        if not await chat_flow_pkg.backend_gate(client, kill_token):
+            log.error("hold_timeout g=%s key=%s", g, key[:16])
+            promstats.requests_total.labels(
+                model=metric_model, stream="true" if stream else "false",
+                outcome="hold_timeout",
+            ).inc()
+            ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error="hold_timeout")
+            _observe_latency()
+            return chat_flow_pkg._error_response(
+                {"error": "backend unavailable, please retry later"}, 502
+            )
+        gate_passed = True
         decision["slot_before_chat"] = await chat_flow_pkg._snapshot_slot(
             client, slot_id, effective_model
         )
@@ -277,9 +300,9 @@ async def chat_flow(
                     error=f"backend {resp.status_code}",
                 )
                 _observe_latency()
-                return JSONResponse(
+                return chat_flow_pkg._error_response(
                     {"error": err_txt.decode("utf-8", "ignore")},
-                    status_code=chat_flow_pkg._provider_error_status(resp.status_code),
+                    chat_flow_pkg._provider_error_status(resp.status_code),
                 )
 
             gen = await chat_flow_pkg.start_stream_task(
@@ -330,9 +353,9 @@ async def chat_flow(
                 ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR,
                               error="provider non-JSON body")
                 _observe_latency()
-                return JSONResponse(
+                return chat_flow_pkg._error_response(
                     {"error": "provider non-JSON body"},
-                    status_code=502,
+                    502,
                 )
 
             # The client maps provider failures to {"object": "error", ...};
@@ -351,9 +374,9 @@ async def chat_flow(
                 ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR,
                               error=str(out.get("message") or "provider error"))
                 _observe_latency()
-                return JSONResponse(
+                return chat_flow_pkg._error_response(
                     body,
-                    status_code=chat_flow_pkg._provider_error_status(out.get("status")),
+                    chat_flow_pkg._provider_error_status(out.get("status")),
                 )
 
             # The full backend body is the group's response.json (both sizes);
@@ -447,7 +470,7 @@ async def chat_flow(
         # KV cache is useless for restore and only wastes disk).
         killed_flag = True
         try:
-            if g is not None:
+            if g is not None and gate_passed:
                 client = sm.backends[g[0]]["client"]
                 await client.erase_slot(g[2], model=g[1])
         except Exception:
@@ -455,18 +478,18 @@ async def chat_flow(
         return _killed(g, used_key)
     except httpx.HTTPError as e:
         # A connect/timeout failure: no backend response at all, so this is a
-        # genuine upstream failure (502), not a proxy bug (500).
+        # genuine upstream failure (502 + Retry-After), not a proxy bug (500).
         log.exception("chat_upstream_error g=%s key=%s", g, key[:16])
         _req_outcome("error")
         ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error=str(e))
         _observe_latency()
-        return JSONResponse({"error": str(e)}, status_code=502)
+        return chat_flow_pkg._error_response({"error": str(e)}, 502)
     except Exception as e:
         log.exception("chat_error g=%s key=%s", g, key[:16])
         _req_outcome("error")
         ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error=str(e))
         _observe_latency()
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return chat_flow_pkg._error_response({"error": str(e)}, 500)
     finally:
         if not stream_handed_off:
             chat_flow_pkg.unregister_kill(rid)

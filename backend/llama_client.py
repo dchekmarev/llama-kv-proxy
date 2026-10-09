@@ -171,6 +171,18 @@ def _resolve_alias(data: object, name: str) -> str | None:
     return by_alias.get(name)
 
 
+def _request_timeout() -> httpx.Timeout:
+    """The backend HTTP timeout with a separately bounded connect phase.
+
+    The read/write/pool phases keep REQUEST_TIMEOUT (a generation can take
+    minutes); the connect phase gets CONNECT_TIMEOUT so a dead backend
+    (refused or black-holed port) fails in seconds and surfaces as a fast
+    502 + Retry-After instead of holding the request -- and its slot -- for
+    the whole request timeout.
+    """
+    return httpx.Timeout(config.REQUEST_TIMEOUT, connect=config.CONNECT_TIMEOUT)
+
+
 def _error_body(message: str, status: int, raw: str = "") -> dict[str, Any]:
     """The provider-failure envelope of the non-streaming completion path.
 
@@ -254,7 +266,7 @@ class LlamaClient:
         self.url = url.rstrip("/")
         self.client = httpx.AsyncClient(
             base_url=self.url,
-            timeout=config.REQUEST_TIMEOUT,
+            timeout=_request_timeout(),
         )
         self._models = _ModelsCache()
         # Router mode is detected from the /v1/models shape and remembered.
@@ -437,6 +449,28 @@ class LlamaClient:
 
     # --- slots --------------------------------------------------------------
 
+    async def probe(self) -> bool:
+        """True when the backend serves: any non-5xx answer on /health.
+
+        llama.cpp answers 503 while a model is loading, so a 5xx means "not
+        serving yet" and the hold loop keeps waiting; a transport failure
+        (refused/black-holed connect, no answer) means "down". The read phase
+        is bounded by MODEL_ID_TIMEOUT so a wedged backend cannot stall one
+        probe for REQUEST_TIMEOUT.
+        """
+        try:
+            response = await self.client.get(
+                "/health",
+                timeout=httpx.Timeout(
+                    config.MODEL_ID_TIMEOUT, connect=config.CONNECT_TIMEOUT
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            # Soft read: a closed client (shutdown race) or any other failure
+            # means "not serving", never an exception to the caller.
+            return False
+        return response.status_code < 500
+
     async def get_slots(self, model: str | None = None) -> list[dict[str, Any]] | None:
         """The backend's slot table, None when unsupported or unreachable.
 
@@ -475,7 +509,7 @@ class LlamaClient:
                 f"/slots/{slot_id}",
                 params={"action": action},
                 json=payload,
-                timeout=config.REQUEST_TIMEOUT,
+                timeout=_request_timeout(),
             )
         except Exception as e:  # noqa: BLE001
             log.warning(
@@ -552,7 +586,7 @@ class LlamaClient:
             params["model"] = model
         try:
             response = await self.client.delete(
-                "/slots", params=params, timeout=config.REQUEST_TIMEOUT
+                "/slots", params=params, timeout=_request_timeout()
             )
         except Exception as e:  # noqa: BLE001
             log.debug("delete_cache_file_failed key=%s url=%s: %s", key[:16], self.url, e)
@@ -616,14 +650,14 @@ class LlamaClient:
                 "/v1/chat/completions",
                 json=body,
                 params=params,
-                timeout=config.REQUEST_TIMEOUT,
+                timeout=_request_timeout(),
             )
             return await self.client.send(request, stream=True)
         response = await self.client.post(
             "/v1/chat/completions",
             json=body,
             params=params,
-            timeout=config.REQUEST_TIMEOUT,
+            timeout=_request_timeout(),
         )
         if response.status_code >= 400:
             return _error_body(

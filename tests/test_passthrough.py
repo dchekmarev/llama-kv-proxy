@@ -6,12 +6,15 @@ as-is (method, path, query, headers, body); the response is streamed back.
 After the /proxy/* rename, the native llama.cpp paths (/slots, /health) are no
 longer shadowed by the proxy's own endpoints and reach the backend."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 import app as app_module
+from core import config
 
 
 class StarletteLikeHeaders(dict):
@@ -46,6 +49,7 @@ def _mock_client(chunks, status=200, headers=None):
     upstream.aclose = AsyncMock()
 
     client = MagicMock()
+    client.probe = AsyncMock(return_value=True)
     built = object()
     client.client.build_request = MagicMock(return_value=built)
     client.client.send = AsyncMock(return_value=upstream)
@@ -209,3 +213,101 @@ async def test_passthrough_drops_upstream_content_encoding():
 
     assert "content-encoding" not in {k.lower() for k in resp.headers}
     assert resp.headers["content-type"] == "text/html"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        httpx.ConnectError("connection refused"),
+        httpx.ConnectTimeout("connect timeout"),
+    ],
+    ids=["connect-error", "connect-timeout"],
+)
+async def test_passthrough_connect_error_502_retry_after(exc):
+    """A dead backend must not surface as an unhandled 500 from the
+    pass-through: it is the same upstream failure as on the chat path,
+    so 502 + Retry-After (timeouts included: ConnectTimeout is an
+    httpx.HTTPError)."""
+    client = MagicMock()
+    client.probe = AsyncMock(return_value=True)
+    client.client.build_request = MagicMock(return_value=object())
+    client.client.send = AsyncMock(side_effect=exc)
+    _setup([client])
+
+    resp = await _passthrough("slots")
+
+    assert resp.status_code == 502
+    assert resp.headers["Retry-After"] == str(config.RETRY_AFTER_S)
+    assert str(exc) in json.loads(resp.body)["error"]
+
+
+@pytest.mark.asyncio
+async def test_passthrough_backend_5xx_mirrored_without_retry_after():
+    """Once the upstream response is open, its status is mirrored verbatim
+    (README contract): a backend 5xx reaches the client as-is, without a
+    proxy-generated Retry-After."""
+    client, _, _ = _mock_client([b"boom"], status=503)
+    _setup([client])
+
+    resp = await _passthrough("completion")
+
+    assert resp.status_code == 503
+    assert "Retry-After" not in resp.headers
+
+
+@pytest.mark.asyncio
+async def test_passthrough_mid_stream_error_ends_cleanly():
+    """A transport failure after the headers were sent ends the streamed
+    response instead of escaping the generator as an unhandled traceback."""
+    client, _, upstream = _mock_client([])
+
+    async def _broken_aiter():
+        yield b"chunk1"
+        raise httpx.ReadError("connection reset")
+
+    upstream.aiter_bytes = _broken_aiter
+    _setup([client])
+
+    resp = await _passthrough("completion")
+
+    chunks = [c async for c in resp.body_iterator]
+    assert chunks == [b"chunk1"], "the chunks before the failure must be delivered"
+    upstream.aclose.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_passthrough_holds_while_backend_down_then_streams(monkeypatch):
+    """Same hold as the chat path: a down backend is waited out before the
+    upstream is opened, so the client sees a long TTFT, not a 502."""
+    import chat_flow
+
+    monkeypatch.setattr(chat_flow, "HOLD_TIMEOUT", 5.0)
+    monkeypatch.setattr(chat_flow, "HOLD_PROBE_INTERVAL_S", 0.01)
+    client, _, _ = _mock_client([b"ok"])
+    client.probe = AsyncMock(side_effect=[False, True])
+    _setup([client])
+
+    resp = await _passthrough("completion")
+
+    assert resp.status_code == 200
+    assert client.probe.call_count == 2
+    assert b"".join([c async for c in resp.body_iterator]) == b"ok"
+
+
+@pytest.mark.asyncio
+async def test_passthrough_hold_exhaustion_502_retry_after(monkeypatch):
+    """When the backend does not come back within HOLD_TIMEOUT, the
+    pass-through answers the chat path's contract: 502 + Retry-After."""
+    import chat_flow
+
+    monkeypatch.setattr(chat_flow, "HOLD_TIMEOUT", 0.05)
+    monkeypatch.setattr(chat_flow, "HOLD_PROBE_INTERVAL_S", 0.01)
+    client, _, _ = _mock_client([b"ok"])
+    client.probe = AsyncMock(return_value=False)
+    _setup([client])
+
+    resp = await _passthrough("completion")
+
+    assert resp.status_code == 502
+    assert resp.headers["Retry-After"] == str(config.RETRY_AFTER_S)

@@ -2,6 +2,8 @@
 
 """Per-request decision record, token metrics, slot snapshot and error mapping."""
 
+from fastapi.responses import JSONResponse
+
 import chat_flow
 import hashing as hs
 from backend.llama_client import LlamaClient
@@ -91,6 +93,22 @@ def _provider_error_status(status: object) -> int:
     if isinstance(status, int) and 400 <= status < 500:
         return status
     return 502
+
+
+def _error_response(body: dict, status: int) -> JSONResponse:
+    """The client-facing error response; the one site that attaches Retry-After.
+
+    A 502 is an upstream failure -- the backend is down, restarting or
+    reloading, often temporarily -- so it carries Retry-After: RETRY_AFTER_S;
+    a retrying client (opencode and anything else honouring the header) then
+    waits out the outage instead of hammering the proxy. A 4xx client fault
+    and a 500 proxy bug get no delay: retrying the same fault or waiting out
+    the delay for a bug helps nobody. (Other statuses -- 499 kill, 503
+    acquire timeout, route 4xx -- are built directly at their sites and
+    never carry the header.)
+    """
+    headers = {"Retry-After": str(chat_flow.RETRY_AFTER_S)} if status == 502 else None
+    return JSONResponse(body, status_code=status, headers=headers)
 
 
 def _new_decision(

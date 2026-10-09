@@ -173,6 +173,7 @@ async def test_empty_capture_clears_the_saved_key(meta_dir, monkeypatch):
 
     sm = SlotManager()
     client = MagicMock()
+    client.probe = AsyncMock(return_value=True)
     client.save_slot = AsyncMock(return_value=True)
     sm.set_clients([client])
     g = (0, "m1", 0)

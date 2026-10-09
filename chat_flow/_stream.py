@@ -102,6 +102,13 @@ async def start_stream_task(
         # (gen's finally cancels the reader task) leaves this unset: the
         # client is already gone, so no error event is emitted.
         error_reason: str | None = None
+        # True when the interruption is the backend's fault (transport error,
+        # backend cancel): the SSE error message then carries the
+        # "503 service unavailable" marker so a retrying client (opencode)
+        # retries. A killed request and a stalled consumer are deliberately
+        # left unmarked: retrying a kill repeats a deliberate drop, and a
+        # stalled consumer is a client-side problem.
+        error_retryable = False
         # Always decode: besides the assembled content (big requests) the raw
         # SSE lines are captured for the request group's raw.json (all sizes).
         decoder = codecs.getincrementaldecoder("utf-8")()
@@ -207,6 +214,7 @@ async def start_stream_task(
             externally_cancelled = task is not None and task.cancelling() > 0
             if not externally_cancelled:
                 error_reason = "stream cancelled by backend"
+                error_retryable = True
             elif _killed():
                 # An operator kill, not a client that went away: the client is
                 # still reading, so the finally pushes the SSE error event and
@@ -223,6 +231,11 @@ async def start_stream_task(
         except Exception as e:
             log.exception("stream_reader_error g=%s key=%s", g, key[:16])
             error_reason = str(e)
+            # Only a transport failure is provably the backend's fault, so
+            # only it earns the retryable marker; a proxy-internal bug
+            # (reader parse/dashboard code raising) must not lure the client
+            # into retrying -- same policy as the non-stream 500.
+            error_retryable = isinstance(e, httpx.HTTPError)
         finally:
             # The request is over from the dashboard's point of view from here
             # on, so the kill handle goes first, before any await below: a kill
@@ -275,11 +288,17 @@ async def start_stream_task(
             # Signal the mid-stream failure to the client exactly once (single
             # push site, guarded by error_reason): without this the stream
             # would end silently (no [DONE], no error) and the client could
-            # not distinguish a truncated stream from a normal one.
+            # not distinguish a truncated stream from a normal one. The payload
+            # is the OpenAI-shaped error object ({"error": {"message": ...}}):
+            # a bare string fails the schema of openai-compatible stream
+            # clients and lands as a non-retryable parse error in opencode,
+            # while the "503 service unavailable" prefix of a backend failure
+            # matches its retryable patterns, so the task self-recovers.
             if error_reason is not None:
-                error_payload = json.dumps(
-                    {"error": f"stream interrupted: {error_reason}"}
-                )
+                message = f"stream interrupted: {error_reason}"
+                if error_retryable:
+                    message = f"503 service unavailable: {message}"
+                error_payload = json.dumps({"error": {"message": message}})
                 if not await _bounded_put(
                     queue,
                     f"data: {error_payload}\n\n".encode(),

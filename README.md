@@ -78,6 +78,16 @@ The proxy forwards the client's request body to the backend verbatim (pass-throu
 - `n_keep` — `-1` (see Limitations);
 - slot pinning: `slot_id`/`id_slot` are duplicated in the body root, in `options`, and in the query parameters, so the request is pinned to the selected slot.
 
+### Backend unavailable
+
+How a dead or loading backend (refused / black-holed port, 5xx) surfaces:
+
+- Hold first: before dispatching (chat after slot acquire, pass-through before opening the upstream) the proxy probes the backend's `/health` (read phase `MODEL_ID_TIMEOUT`, connect phase `CONNECT_TIMEOUT`). Any non-5xx answer means "serving" — llama.cpp answers 503 while a model is loading, so a 5xx or a transport failure means "not serving yet". While not serving, the connection (and the slot) is held, re-probed every second, for up to `HOLD_TIMEOUT` seconds: a short outage is a long TTFT, not a failed turn. `HOLD_TIMEOUT=0` disables the wait (one probe, then 502).
+- On hold exhaustion, and on any later connect failure: `502` JSON `{"error": ...}` with `Retry-After: RETRY_AFTER_S`, so a retrying client (opencode and anything else honouring the header) waits out the outage instead of hammering. A refused connect fails within `CONNECT_TIMEOUT`.
+- Pass-through `/{path}`: same hold, then the same `502` + `Retry-After` on exhaustion. Once the upstream response is open its status (incl. 5xx) is mirrored verbatim, without a proxy `Retry-After`; a transport failure mid-stream ends the response cleanly (logged).
+- Stream already open when the backend dies: SSE `data: {"error": {"message": "503 service unavailable: stream interrupted: ..."}}`; the prefix matches opencode's retryable patterns, so it retries. A killed request (`killed by operator`) and a stalled consumer are deliberately unmarked — retrying them is wrong.
+- No `Retry-After` on: a backend `4xx` (the status passes through unchanged, the body is re-shaped to `{"error": ...}`; a client fault does not go away on retry), an unexpected proxy bug (`500`), and the slot-exhaustion `503`.
+
 ## Quick start
 
 1) Start llama.cpp (https://github.com/ggml-org/llama.cpp) with slots and a cache directory:
@@ -162,7 +172,10 @@ All parameters are environment variables; defaults in parentheses.
 | `META_DIR` | `kv_meta` | Directory for local `.meta` descriptors, relative to the app directory. |
 | `REQUEST_LOG_DIR` | `kv_reqlog` | Directory for per-request JSON groups (`{timestamp_ms}.{request_id}.{type}.json`: `request`, `response`, `prefix`, `decision`, plus `raw` with the raw SSE for streams), relative to the app directory. Empty disables logging. |
 | `REQUEST_LOG_MAX_GROUPS` | `100` | Max number of request groups kept; oldest groups (all their files) are deleted first. `0` disables rotation. |
-| `REQUEST_TIMEOUT` | `1500` | HTTP timeout to the backends, seconds. |
+| `REQUEST_TIMEOUT` | `1500` | HTTP timeout to the backends for the read/write/pool phases, seconds (the connect phase is `CONNECT_TIMEOUT`). |
+| `CONNECT_TIMEOUT` | `10` | Connect-phase timeout of a backend dispatch call, seconds: a refused or black-holed connect fails in this many seconds (fast 502) instead of waiting out `REQUEST_TIMEOUT`. Model-id and slot probes run separately with `MODEL_ID_TIMEOUT`. |
+| `RETRY_AFTER_S` | `300` | `Retry-After` header value (seconds) on 502 upstream-failure responses, so a retrying client waits out a backend outage instead of hammering the proxy. |
+| `HOLD_TIMEOUT` | `240` | Max seconds a request holds its connection (and its slot) while the picked backend is unreachable or unhealthy (5xx on `/health`, e.g. model loading); 502 + `Retry-After` after. 0 disables the wait. |
 | `ACQUIRE_TIMEOUT` | `1500` | Maximum wait for a free slot, seconds. |
 | `SAVE_WAIT_TIMEOUT` | `30` | Max seconds a big request waits for an in-flight save of a prefix of its own conversation before giving up on the restore (the previous message's meta lands only after its `.bin` write). `0` disables the wait. |
 | `MODEL_ID` | `llama.cpp` | Fallback model id returned by `/v1/models` when the backend is unavailable, and the namespace of a model-less request whose backend id is unknown. It is also the cache namespace of a restore, so two different models sharing it can restore each other's KV: change it when you swap the served model. Client `model` aliases are mapped through the backend preset table instead (see *Model aliases*). |
@@ -223,7 +236,7 @@ All parameters are environment variables; defaults in parentheses.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `llama_kv_proxy_requests_total` | counter | `model`, `stream`, `outcome` | Chat requests by outcome: `ok`, `error`, `acquire_timeout`, `client_disconnect`, `killed`. |
+| `llama_kv_proxy_requests_total` | counter | `model`, `stream`, `outcome` | Chat requests by outcome: `ok`, `error`, `acquire_timeout`, `hold_timeout`, `client_disconnect`, `killed`. |
 | `llama_kv_proxy_request_duration_seconds` | histogram | `model`, `stream` | Total request duration (start to response end). |
 | `llama_kv_proxy_ttft_seconds` | histogram | `model`, `stream` | Time to first token; for non-stream it equals the total duration. |
 | `llama_kv_proxy_tokens_total` | counter | `model`, `kind` | Backend-reported tokens: `prompt`, `completion`, `cached`. |

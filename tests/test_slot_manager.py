@@ -29,6 +29,7 @@ def sm(monkeypatch):
     monkeypatch.setattr(sm_module, "BACKENDS", [{"url": "http://be", "n_slots": 2}])
     manager = SlotManager()
     client = MagicMock()
+    client.probe = AsyncMock(return_value=True)
     client.restore_slot = AsyncMock(return_value=True)
     client.save_slot = AsyncMock(return_value=True)
     manager.set_clients([client])

@@ -152,6 +152,9 @@ class Harness:
                 "BIN_CACHE_DIR": "",
                 "ACQUIRE_TIMEOUT": "90",
                 "REQUEST_TIMEOUT": "120",
+                # Held requests (backend down) must 502 long before the
+                # harness client gives up at 60s.
+                "HOLD_TIMEOUT": "5",
                 "SLOT_POLL_INTERVAL_S": "2",
                 "MODEL_ID_TTL": "60",
                 "EVICT_INTERVAL_S": "3600",
@@ -415,8 +418,8 @@ class Harness:
                 t0 = time.time()
                 try:
                     status, body = self.chat(False, stream, f"e{i}", 30)
-                    # non-stream -> proxy maps to 502; stream -> 500 passthrough
-                    ok = status in (500, 502)
+                    # both paths map a backend 5xx to 502 + Retry-After
+                    ok = status == 502
                     out.add(f"err{i}", ok, time.time() - t0,
                             f"status={status} body={body[:120]}")
                 except Exception as e:  # noqa: BLE001
@@ -439,8 +442,8 @@ class Harness:
             t0 = time.time()
             try:
                 status, body = self.chat(False, i % 2 == 0, f"d{i}", 60)
-                # after the kill: 500 JSON (non-stream) or SSE error event (stream)
-                ok = status == 500 or "stream interrupted" in body
+                # after the backend process is killed: 502 + Retry-After (non-stream) or SSE error event (stream)
+                ok = status == 502 or "stream interrupted" in body
                 out.add(f"down{i}", ok, time.time() - t0,
                         f"status={status} body={body[:120]}")
             except Exception as e:  # noqa: BLE001

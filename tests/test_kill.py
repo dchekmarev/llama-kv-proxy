@@ -356,6 +356,9 @@ async def test_kill_in_flight_stream(sm, meta_dir):
 
     events = b"".join(rest)
     assert b"killed by operator" in events, "a killed stream must say so to its client"
+    assert b"503 service unavailable" not in events, (
+        "a killed request must not be marked retryable: the kill was deliberate"
+    )
     assert b"[DONE]" not in events, "a killed stream must not look complete"
     assert resp.closed
     _assert_all_free(sm)

@@ -84,6 +84,7 @@ def test_stream_usage_rejects_empty_usage():
 @pytest.mark.asyncio
 async def test_snapshot_slot_records_kv_state():
     client = MagicMock()
+    client.probe = AsyncMock(return_value=True)
     client.get_slots = AsyncMock(
         return_value=[{"id": 0, "state": 1, "n_past": 0, "n_tokens": 0}]
     )
@@ -95,6 +96,7 @@ async def test_snapshot_slot_records_kv_state():
 @pytest.mark.asyncio
 async def test_snapshot_slot_returns_none_when_get_slots_fails():
     client = MagicMock()
+    client.probe = AsyncMock(return_value=True)
     client.get_slots = AsyncMock(side_effect=RuntimeError("boom"))
     assert await chat_flow._snapshot_slot(client, 0, "m1") is None
 

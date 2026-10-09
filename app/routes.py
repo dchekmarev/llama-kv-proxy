@@ -14,6 +14,7 @@ import logging
 from collections.abc import AsyncIterator, Iterable
 from typing import Any, cast
 
+import httpx
 from fastapi import Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
@@ -362,10 +363,18 @@ def _upstream_headers(headers: Any) -> dict[str, str]:
 
 
 async def _iter_upstream(upstream: Any) -> AsyncIterator[bytes]:
-    """Yield the upstream body chunks in order, then close the response."""
+    """Yield the upstream body chunks in order, then close the response.
+
+    A transport failure mid-stream ends the iteration cleanly: the response
+    headers are already sent, so the client can only see the truncation, and
+    letting the httpx error escape would add nothing but a traceback in the
+    server log.
+    """
     try:
         async for chunk in upstream.aiter_bytes():
             yield chunk
+    except httpx.HTTPError as e:
+        log.warning("passthrough_stream_error: %s", e)
     finally:
         await upstream.aclose()
 
@@ -381,9 +390,18 @@ async def passthrough(path: str, request: Request) -> Response:
     The first backend only, consistently with /v1/models: the pass-through
     serves the native llama.cpp endpoints (slots, tokenize, completion, ...),
     which are single-server APIs. The upstream status is mirrored and the body
-    is never buffered.
+    is never buffered; before the upstream is opened the backend is held the
+    same way as on the chat path (HOLD_TIMEOUT, then 502 + Retry-After), and a
+    transport failure mid-stream ends the response cleanly.
     """
     client = app_pkg.app.state.clients[0]
+    # Same hold as the chat path: wait for the backend to serve before opening
+    # the upstream (no kill token: the pass-through is not killable).
+    if not await chat_flow.backend_gate(client, None):
+        log.error("passthrough_hold_timeout path=%s", path)
+        return chat_flow._error_response(
+            {"error": "backend unavailable, please retry later"}, 502
+        )
     built = client.client.build_request(
         request.method,
         "/" + path,
@@ -391,7 +409,13 @@ async def passthrough(path: str, request: Request) -> Response:
         content=await request.body(),
         headers=_forwarded_headers(request.headers),
     )
-    upstream = await client.client.send(built, stream=True)
+    try:
+        upstream = await client.client.send(built, stream=True)
+    except httpx.HTTPError as e:
+        # Same contract as the chat path: an unreachable backend is an
+        # upstream failure (502 + Retry-After), not an unhandled 500.
+        log.warning("passthrough_upstream_error path=%s: %s", path, e)
+        return chat_flow._error_response({"error": str(e)}, 502)
     return StreamingResponse(
         _iter_upstream(upstream),
         status_code=upstream.status_code,
