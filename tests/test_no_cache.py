@@ -56,9 +56,14 @@ async def test_no_cache_big_json_untouched_slot(sm, meta_dir, monkeypatch):
     acquired: dict = {}
     orig = sm.acquire_for_request
 
-    async def spy(model, restore_key=None, resolve_restore_key=None):
+    async def spy(model, restore_key=None, resolve_restore_key=None, need_tokens=None):
         acquired["restore_key"] = restore_key
-        return await orig(model, restore_key, resolve_restore_key=resolve_restore_key)
+        return await orig(
+            model,
+            restore_key,
+            resolve_restore_key=resolve_restore_key,
+            need_tokens=need_tokens,
+        )
 
     sm.acquire_for_request = spy
 

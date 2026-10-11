@@ -3,6 +3,7 @@
 """P2-1: backend config must be validated at startup with a clear error
 instead of silently degrading to an empty list (later IndexError)."""
 
+import importlib
 import os
 
 import pytest
@@ -146,3 +147,73 @@ def test_init_runtime_validates_backends(monkeypatch):
     monkeypatch.setattr(config, "BACKENDS", [])
     with pytest.raises(ValueError, match="empty"):
         config.init_runtime()
+
+
+def test_context_admission_defaults():
+    """Context-budget admission knobs carry their documented defaults."""
+    assert config.MAX_TOKENS == 32768
+    assert config.CONTEXT_ADMISSION_ENABLED is True
+    assert config.TOKENIZER_ENABLED is True
+    assert config.TOKENIZER_MODEL == "qwen-turbo"
+    assert config.TOKENS_PER_WORD == pytest.approx(1.3)
+    assert config.PROMPT_TEMPLATE_MARGIN_TOKENS == 64
+
+
+def test_max_tokens_from_env(monkeypatch):
+    monkeypatch.setenv("MAX_TOKENS", "4096")
+    importlib.reload(config)
+    try:
+        assert config.MAX_TOKENS == 4096
+    finally:
+        monkeypatch.delenv("MAX_TOKENS")
+        importlib.reload(config)
+
+
+def test_context_admission_enabled_from_env(monkeypatch):
+    monkeypatch.setenv("CONTEXT_ADMISSION_ENABLED", "false")
+    importlib.reload(config)
+    try:
+        assert config.CONTEXT_ADMISSION_ENABLED is False
+    finally:
+        monkeypatch.delenv("CONTEXT_ADMISSION_ENABLED")
+        importlib.reload(config)
+
+
+def test_tokenizer_enabled_from_env(monkeypatch):
+    monkeypatch.setenv("TOKENIZER_ENABLED", "off")
+    importlib.reload(config)
+    try:
+        assert config.TOKENIZER_ENABLED is False
+    finally:
+        monkeypatch.delenv("TOKENIZER_ENABLED")
+        importlib.reload(config)
+
+
+def test_tokenizer_model_from_env(monkeypatch):
+    monkeypatch.setenv("TOKENIZER_MODEL", "qwen-max")
+    importlib.reload(config)
+    try:
+        assert config.TOKENIZER_MODEL == "qwen-max"
+    finally:
+        monkeypatch.delenv("TOKENIZER_MODEL")
+        importlib.reload(config)
+
+
+def test_tokens_per_word_from_env(monkeypatch):
+    monkeypatch.setenv("TOKENS_PER_WORD", "1.5")
+    importlib.reload(config)
+    try:
+        assert config.TOKENS_PER_WORD == pytest.approx(1.5)
+    finally:
+        monkeypatch.delenv("TOKENS_PER_WORD")
+        importlib.reload(config)
+
+
+def test_prompt_template_margin_from_env(monkeypatch):
+    monkeypatch.setenv("PROMPT_TEMPLATE_MARGIN_TOKENS", "128")
+    importlib.reload(config)
+    try:
+        assert config.PROMPT_TEMPLATE_MARGIN_TOKENS == 128
+    finally:
+        monkeypatch.delenv("PROMPT_TEMPLATE_MARGIN_TOKENS")
+        importlib.reload(config)

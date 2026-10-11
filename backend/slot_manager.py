@@ -79,6 +79,23 @@ def _slot_ids(slots: list[dict]) -> list[int] | None:
     return ids
 
 
+def _first_n_ctx(slots: list[dict]) -> int | None:
+    """The `n_ctx` of the first slot that reports a usable one, else None.
+
+    `n_ctx` is the shared context size (llama.cpp ``--parallel N
+    --kv-unified``: the N slots share one context), not a per-slot budget:
+    every slot of the pool reports the same value. A missing or non-positive
+    value leaves the pool ungated.
+    """
+    for slot in slots or []:
+        if not isinstance(slot, dict):
+            continue
+        n_ctx = slot.get("n_ctx")
+        if isinstance(n_ctx, int) and not isinstance(n_ctx, bool) and n_ctx > 0:
+            return n_ctx
+    return None
+
+
 class SlotManager:
     """Per-(backend, model) slot pools with FIFO, lock-scoped acquisition."""
 
@@ -93,10 +110,22 @@ class SlotManager:
         self._locks: dict[GSlot, asyncio.Lock] = {}
         self._last_used: dict[GSlot, float] = {}
         self._last_saved: dict[GSlot, str] = {}
-        # model -> FIFO queue of the requests parked on a fully busy pool.
-        self._waiters: dict[str, deque[asyncio.Future[None]]] = {}
+        # model -> FIFO queue of the requests parked on a fully busy pool,
+        # each entry carrying its context demand so a waiter that cannot
+        # progress is skipped in favour of a younger one that can.
+        self._waiters: dict[str, deque[tuple[asyncio.Future[None], int | None]]] = {}
         # (backend, model) -> last freshen, the on-demand re-poll throttle.
         self._freshened: dict[tuple[int, str], float] = {}
+        # Context-budget admission control, per (backend, model):
+        #   _total_ctx     -- the shared context size (from /slots n_ctx, or
+        #                     the /v1/models meta fallback); absent => unknown,
+        #                     so the pool is not gated.
+        #   _reserved      -- tokens reserved by the slots currently held.
+        #   _slot_reserved -- what a held slot reserved, keyed by GSlot, so
+        #                     release returns exactly what acquire took.
+        self._total_ctx: dict[tuple[int, str], int] = {}
+        self._reserved: dict[tuple[int, str], int] = {}
+        self._slot_reserved: dict[GSlot, int] = {}
 
     # --- wiring ---------------------------------------------------------------
 
@@ -131,6 +160,13 @@ class SlotManager:
         self._forget_gone(backend_index, model, set(ids))
         self._pools[(backend_index, model)] = ids
         self._backend_slots[(backend_index, model)] = list(slots)
+        # The shared context size rides on the report; a report that carries
+        # none leaves the pool ungated (the /v1/models fallback may fill it).
+        total = _first_n_ctx(slots)
+        if total is None:
+            self._total_ctx.pop((backend_index, model), None)
+        else:
+            self._total_ctx[(backend_index, model)] = total
 
     def discovered_models(self) -> set[str]:
         """Model ids that at least one backend reported slots for.
@@ -228,6 +264,44 @@ class SlotManager:
         ids = self._pools.get((g[0], g[1]))
         return ids is not None and g[2] in ids
 
+    # --- context budget -------------------------------------------------------
+
+    def _reserve(self, g: GSlot, amount: int) -> None:
+        """Record what a held slot reserved and publish the pool's total.
+
+        Called with the slot's lock already held and before any await, so
+        the reservation is exact for every acquire path.
+        """
+        pool = (g[0], g[1])
+        self._slot_reserved[g] = amount
+        total = self._reserved.get(pool, 0) + amount
+        self._reserved[pool] = total
+        promstats.context_reserved_tokens.labels(
+            backend=str(g[0]), model=promstats.model_label(g[1])
+        ).set(total)
+
+    def _unreserve(self, g: GSlot) -> None:
+        """Return a released slot's reservation to its pool.
+
+        A slot with no record (admission was disabled for it, or it was
+        already released) changes nothing: release is "exactly once" by
+        contract, but a stray call must not drive the pool negative. The
+        record of a slot cut from its pool while held is dropped here too.
+        """
+        amount = self._slot_reserved.pop(g, None)
+        if amount is None:
+            return
+        pool = (g[0], g[1])
+        total = self._reserved.get(pool, 0) - amount
+        if total > 0:
+            self._reserved[pool] = total
+        else:
+            self._reserved.pop(pool, None)
+            total = 0
+        promstats.context_reserved_tokens.labels(
+            backend=str(g[0]), model=promstats.model_label(g[1])
+        ).set(total)
+
     # --- picking --------------------------------------------------------------
 
     @staticmethod
@@ -239,12 +313,52 @@ class SlotManager:
         lock = self._locks.get(g)
         return lock is not None and lock.locked()
 
-    def _get_free_or_oldest(self, model: str) -> tuple[GSlot, asyncio.Lock]:
+    def _fits(self, g: GSlot, need_tokens: int | None) -> bool:
+        """Whether `need_tokens` fits the slot's pool after what is reserved.
+
+        `need_tokens` None means admission is disabled. An unknown
+        `total_ctx` (no report carried an `n_ctx`, and the fallback found
+        none) also means no gate: without a context size there is nothing to
+        admit against.
+        """
+        if need_tokens is None:
+            return True
+        total = self._total_ctx.get((g[0], g[1]))
+        if total is None:
+            return True
+        return self._reserved.get((g[0], g[1]), 0) + need_tokens <= total
+
+    def _oversized(self, model: str, need_tokens: int | None) -> bool:
+        """Whether `need_tokens` fits no empty pool of the model's backends.
+
+        Such a request can never be admitted by waiting for budget to free,
+        so the gate is waived for it (best effort: a free slot if there is
+        one, else park, exactly as with admission disabled). A backend with
+        an unknown `total_ctx` counts as fitting, since its slots are
+        ungated; with no candidate backend known, nothing is oversized.
+        """
+        if need_tokens is None:
+            return False
+        candidates = self._slots_for_model(model) or [self._bootstrap_slot(model)]
+        for backend in {g[0] for g in candidates}:
+            total = self._total_ctx.get((backend, model))
+            if total is None or need_tokens <= total:
+                return False
+        return True
+
+    def _get_free_or_oldest(
+        self, model: str, need_tokens: int | None = None
+    ) -> tuple[GSlot, asyncio.Lock]:
         """Pick a slot for a model: a free one, else the least recently used.
 
         Never blocks and never hands out a busy slot: the caller acquires
         the returned lock, and that acquire happens without an await in
         between, so the check and the claim are atomic.
+
+        With `need_tokens` set, a free slot is only a candidate when the
+        model's pool has the budget for it; when every free slot is over
+        budget the oldest slot is returned instead (busy or not), so the
+        caller parks and re-picks after a release.
 
         A free slot that just saved holds a usable KV cache, so it is used
         only when every free slot does: a request that does not want that
@@ -254,6 +368,8 @@ class SlotManager:
         """
         candidates = self._slots_for_model(model) or [self._bootstrap_slot(model)]
         free = [g for g in candidates if not self._is_busy(g)]
+        if need_tokens is not None:
+            free = [g for g in free if self._fits(g, need_tokens)]
         if free:
             pick = next((g for g in free if g not in self._last_saved), free[0])
         else:
@@ -262,7 +378,22 @@ class SlotManager:
 
     # --- waiting --------------------------------------------------------------
 
-    async def _park(self, model: str) -> None:
+    def _can_progress(self, model: str, need_tokens: int | None) -> bool:
+        """Whether a waiter with this demand can take a slot right now.
+
+        True when admission does not gate it (no demand, or an oversized
+        request the gate waives) or when some free slot's pool has the
+        budget for it. `_wake_one` uses it to skip a parked waiter that
+        would only re-park, so it does not hide a younger one that fits.
+        """
+        if need_tokens is None or self._oversized(model, need_tokens):
+            return True
+        candidates = self._slots_for_model(model) or [self._bootstrap_slot(model)]
+        return any(
+            not self._is_busy(g) and self._fits(g, need_tokens) for g in candidates
+        )
+
+    async def _park(self, model: str, need_tokens: int | None = None) -> None:
         """Wait for a release of the model's pool, in FIFO order.
 
         The queue is the wait list: it is what makes the wake order fair,
@@ -271,36 +402,64 @@ class SlotManager:
         """
         queue = self._waiters.setdefault(model, deque())
         fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        queue.append(fut)
+        entry = (fut, need_tokens)
+        queue.append(entry)
         try:
             await fut
         finally:
-            if fut in queue:
-                queue.remove(fut)
+            if entry in queue:
+                queue.remove(entry)
             if not queue and self._waiters.get(model) is queue:
                 del self._waiters[model]
 
     def _wake_one(self, model: str) -> None:
-        """Wake the oldest live waiter of a model, if there is one."""
+        """Wake the oldest parked waiter of a model that can take a slot now.
+
+        Waking the plain oldest let a request that no longer fits (it
+        re-parks) hide a younger one that does, leaving the just-freed
+        slot and budget idle until an unrelated release. Skipping the
+        waiters that cannot progress wakes the oldest that can; when none
+        can, nobody is woken and the next release re-tries.
+        """
         queue = self._waiters.get(model)
         if not queue:
             return
-        while queue:
-            fut = queue.popleft()
-            if not fut.done():
-                fut.set_result(None)
-                break
+        for i, (fut, need_tokens) in enumerate(queue):
+            if fut.done() or not self._can_progress(model, need_tokens):
+                continue
+            del queue[i]
+            fut.set_result(None)
+            break
         if not queue and self._waiters.get(model) is queue:
             del self._waiters[model]
 
-    async def _take_slot(self, model: str) -> tuple[GSlot, asyncio.Lock]:
-        """Acquire a slot of the model, waiting FIFO while the pool is busy."""
+    async def _take_slot(
+        self, model: str, need_tokens: int | None = None
+    ) -> tuple[GSlot, asyncio.Lock]:
+        """Acquire a slot of the model, waiting FIFO while the pool is busy.
+
+        With `need_tokens` set, a slot is only taken while the pool has the
+        budget for it; a request that fits no empty pool at all is waived
+        (and counted) so it is not parked forever.
+        """
         while True:
-            g, lock = self._get_free_or_oldest(model)
-            if not lock.locked():
+            if self._oversized(model, need_tokens):
+                # Cannot fit even an empty pool: admit it best effort onto a
+                # free slot exactly as an ungated request would, else park.
+                g, lock = self._get_free_or_oldest(model)
+                if not lock.locked():
+                    promstats.admission_oversized_total.labels(
+                        model=promstats.model_label(model)
+                    ).inc()
+                    await lock.acquire()
+                    return g, lock
+                await self._park(model, need_tokens)
+                continue
+            g, lock = self._get_free_or_oldest(model, need_tokens)
+            if not lock.locked() and self._fits(g, need_tokens):
                 await lock.acquire()  # free: returns without yielding
                 return g, lock
-            await self._park(model)
+            await self._park(model, need_tokens)
 
     # --- request lifecycle ----------------------------------------------------
 
@@ -309,6 +468,7 @@ class SlotManager:
         model: str,
         restore_key: str | None = None,
         resolve_restore_key: Callable[[str], str] | None = None,
+        need_tokens: int | None = None,
     ) -> tuple[GSlot, asyncio.Lock, RestoreOutcome, str | None]:
         """Take a slot for a request and restore a cache into it.
 
@@ -319,12 +479,21 @@ class SlotManager:
         passed through `resolve_restore_key`, which re-points a candidate
         that a concurrent save has subsumed onto its replacement.
 
+        `need_tokens` is the request's estimated context demand: the slot is
+        only taken while the pool's reserved tokens plus `need_tokens` fit
+        its total context, and the amount is reserved for as long as the
+        slot is held. None disables admission (today's behavior).
+
         The lock is held on return in every path except cancellation: the
         caller owns the slot until it releases it, exactly once. A failure
         or a timeout of the restore must not leak it, and it must not
         release it either (the request still runs on that slot).
         """
-        g, lock = await self._take_slot(model)
+        g, lock = await self._take_slot(model, need_tokens)
+        if need_tokens is not None:
+            # Reserve under the held lock before any await: release(g)
+            # returns exactly this amount, including after a cut slot.
+            self._reserve(g, need_tokens)
         # Occupying a slot is a unit of committed work for the pause drain:
         # the slot is held until release() returns it, whether that happens
         # through the pipeline's finally, the stream reader or a background
@@ -384,6 +553,9 @@ class SlotManager:
         # Idempotent: activity_end clamps at zero, so a slot released without
         # a paired acquire (a test) cannot drive the counter negative.
         pause_mod.activity_end()
+        # Return the context budget this slot reserved (if admission was on),
+        # even for a slot that was cut from its pool while it was held.
+        self._unreserve(g)
         lock = self._locks.get(g)
         if lock is not None and lock.locked():
             lock.release()
@@ -471,4 +643,28 @@ class SlotManager:
             before = self._pools.get(pool, [])
             self.set_backend_slots(backend, model, slots)
             changed = changed or self._pools.get(pool, []) != before
+            # /slots is often the only context source, but when it carried no
+            # n_ctx, fall back to /v1/models so the pool is still gated.
+            await self._learn_ctx(backend, model, client)
         return changed
+
+    async def _learn_ctx(self, backend: int, model: str, client) -> None:
+        """Cache a pool's context size from /v1/models when /slots lacks it.
+
+        Optional and non-fatal: a missing method, a down backend or a
+        malformed listing leaves `total_ctx` unknown, so the pool stays
+        ungated.
+        """
+        pool = (backend, model)
+        if pool in self._total_ctx:
+            return
+        get_ctx = getattr(client, "get_model_ctx", None)
+        if get_ctx is None:
+            return
+        try:
+            total = await get_ctx(model)
+        except Exception as e:  # noqa: BLE001
+            log.debug("model_ctx_failed be=%d model=%s: %s", backend, model, e)
+            return
+        if isinstance(total, int) and not isinstance(total, bool) and total > 0:
+            self._total_ctx[pool] = total

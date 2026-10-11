@@ -216,6 +216,47 @@ async def _chat_once(
     metric_model = promstats.UNRESOLVED_LABEL if unresolved_alias else effective_model
     if not unresolved_alias:
         await sm.freshen_model(effective_model)
+
+    # Context-budget admission: the request must declare its token demand
+    # (estimated prompt + generation) before it picks a slot, so the pool can
+    # keep the sum of the in-flight demands within the backend's shared context
+    # (llama.cpp --parallel N --kv-unified: the N slots share one -c context).
+    # The client's requested cap (max_tokens or n_predict) bounds the generation
+    # budget; MAX_TOKENS applies when it sends neither. With the feature off the
+    # estimate (a CPU-bound tokenizer pass) is skipped entirely.
+    client_cap: int | None = None
+    for cap_key in ("max_tokens", "n_predict"):
+        cap = data.get(cap_key)
+        if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
+            client_cap = cap
+            break
+    gen_budget = (
+        min(chat_flow_pkg.MAX_TOKENS, client_cap)
+        if client_cap is not None
+        else chat_flow_pkg.MAX_TOKENS
+    )
+    # Admission budgets a resolved model's pool; an unresolved alias has none:
+    # it is proxied onto the ungated bootstrap slot without cache treatment, and
+    # gating it would mint a per-alias context_reserved_tokens series (the same
+    # cardinality leak the metric_model bucket below avoids). So it is not gated.
+    admission_enabled = (
+        chat_flow_pkg.CONTEXT_ADMISSION_ENABLED and not unresolved_alias
+    )
+    est_prompt: int | None = None
+    need_tokens: int | None = None
+    if admission_enabled:
+        est_prompt = await hs.estimate_prompt_tokens_async(prefix)
+        need_tokens = est_prompt + gen_budget
+        promstats.estimated_prompt_tokens.labels(model=metric_model).observe(
+            est_prompt
+        )
+    decision["admission"] = {
+        "enabled": admission_enabled,
+        "est_prompt_tokens": est_prompt,
+        "gen_budget": gen_budget,
+        "need_tokens": need_tokens,
+    }
+
     t_acq = time.monotonic()
     try:
         try:
@@ -226,6 +267,7 @@ async def _chat_once(
                             effective_model,
                             restore_key if do_cache else None,
                             resolve_restore_key=chat_flow_pkg._resolve_restore_key if do_cache else None,
+                            need_tokens=need_tokens,
                         ),
                     ),
                     kill_token,

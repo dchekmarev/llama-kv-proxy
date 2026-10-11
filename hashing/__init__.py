@@ -108,6 +108,11 @@ from ._text import (
     saved_conversation_values,
     words_from_text,
 )
+from .tokens import (
+    estimate_prompt_tokens,
+    estimate_prompt_tokens_async,
+    reset_tokenizer,
+)
 
 __all__ = [
     "META_DIR",
@@ -157,6 +162,8 @@ __all__ = [
     "delete_meta_async",
     "delete_subsumed_metas",
     "delete_subsumed_metas_async",
+    "estimate_prompt_tokens",
+    "estimate_prompt_tokens_async",
     "evict_meta",
     "evict_meta_async",
     "find_best_restore_candidate",
@@ -180,6 +187,7 @@ __all__ = [
     "render_ctx_leader",
     "request_prefix_values",
     "request_prefix_values_async",
+    "reset_tokenizer",
     "saved_conversation_values",
     "scan_all_meta",
     "scan_all_meta_async",

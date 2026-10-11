@@ -50,6 +50,16 @@ By default the search first consults an in-memory index of the metas' prefix has
 - Each slot is guarded with an async lock; if all slots are busy the request waits up to `ACQUIRE_TIMEOUT` seconds and then gets HTTP 503.
 - For a big request with a match, the cache is restored into the chosen slot before the chat. If the backend reports the file missing (404), the stale meta is dropped; other failures keep the meta (a retry can succeed).
 
+### Parallel requests and context budget admission
+
+llama.cpp `--parallel N` with `--kv-unified` gives the N slots **one shared context** of `-c` tokens: admitting N requests by slot count alone lets them collectively exceed it (backend `500 "Context size has been exceeded"`). The proxy budgets the shared context instead:
+
+- Before picking a slot it estimates the prompt's tokens and reserves `estimated_prompt_tokens + min(MAX_TOKENS, client cap)` per admitted request, where the client cap is `max_tokens` or `n_predict` (absent => `MAX_TOKENS`); a request is admitted only when `reserved + need <= n_ctx`.
+- `n_ctx` comes from `GET /slots` (`n_ctx`), falling back to `/v1/models` `meta.n_ctx`; with neither, the pool is ungated (no context size to admit against).
+- When the budget is exhausted while a slot is free, the request waits FIFO with the other waiters up to `ACQUIRE_TIMEOUT`, then gets `503` (same as all-slots-busy).
+- A single request that fits no empty pool can never be admitted by waiting, so it is admitted best-effort (a free slot if one exists, else it parks) and counted in `admission_oversized_total`.
+- The estimate is taken only while `CONTEXT_ADMISSION_ENABLED`: the local tokenizer when available (see Quick start), else a word-count estimate. It is per-process state — single worker only, same caveat as the slot manager.
+
 ### Save and restore from disk
 
 llama.cpp's HTTP server exposes slot save/restore: saving writes a cache file to the `--slot-save-path` directory, and restore loads by file basename (`<key>.bin`). The proxy keeps small local `.meta` files describing cached prefixes for fast lookup, while llama.cpp owns the actual KV `.bin` files. After a big request completes, the proxy saves the slot (prompt + assistant response), writes the meta, and deletes the metas (and `.bin` files) of strict prefixes of the new conversation, so a continuation does not leave stale, shorter caches behind.
@@ -149,6 +159,8 @@ python3 -m venv venv && source venv/bin/activate && pip install -r requirements.
 python3 -m app  # or: uvicorn app:app --host 0.0.0.0 --port 8081
 ```
 
+The accurate local prompt-token estimator (context-budget admission) uses the optional `dashscope` tokenizer: `pip install -r requirements-tokenizer.txt`. It is not required — without it the proxy falls back to a deterministic word-count estimate.
+
 Run the proxy with a **single worker** (the default). The slot manager keeps per-process state (locks, LRU marks); multiple workers would each track slots independently and could route two requests to the same slot.
 
 Your clients should call the proxy's `/v1/chat/completions` endpoint; the proxy handles matching, slot selection, save/restore, and streaming vs non-streaming automatically:
@@ -235,6 +247,12 @@ All parameters are environment variables; defaults in parentheses.
 | `ERASE_BEFORE_CHAT` | `1` | `1` erases a slot's in-memory KV before any chat that was not preceded by a successful restore, so it does not start on top of a stale or oversized prompt (which can wedge llama.cpp in `PROCESSING_PROMPT`). On by default. |
 | `SKIP_RESTORE_SAME_SLOT` | `1` | `1` skips a pre-chat restore when the picked slot already holds the target key's KV (it just saved it, or it was restored there and unused since). On by default. |
 | `STUCK_SLOT_THRESHOLD_S` | `1500` | Watchdog: a backend slot reporting `is_processing` for longer than this is presumed wedged and is erased to recover the backend without a restart. `0` disables. |
+| `MAX_TOKENS` | `32768` | Generation budget reserved per admitted request when the client sends neither `max_tokens` nor `n_predict`; the demand is `estimated_prompt_tokens + min(MAX_TOKENS, client cap)`. |
+| `CONTEXT_ADMISSION_ENABLED` | `1` | `0` disables context-budget admission: no prompt-token estimate is taken and no budget is reserved (slots are counted, not budgeted). |
+| `TOKENIZER_ENABLED` | `1` | `0` forces the word-count estimate instead of the local dashscope tokenizer. |
+| `TOKENIZER_MODEL` | `qwen-turbo` | dashscope tokenizer model used by the local prompt-token estimator. |
+| `TOKENS_PER_WORD` | `1.3` | Multiplier of the word-count fallback estimate. |
+| `PROMPT_TEMPLATE_MARGIN_TOKENS` | `64` | Tokens added to every estimate to cover the chat template's special tokens (absent from the hashed prefix). |
 | `REASONING_IN_KEY` | `0` | `1` includes `reasoning_content`/`reasoning` in the per-message cache-key parts and in the saved assistant response, so distinct reasoning traces get distinct cache keys. Only matters when the backend chat template renders reasoning into the prompt. Off by default (keys byte-identical to the legacy behavior). |
 | `UI_ENABLED` | `1` | `0` disables the `/proxy/ui/` dashboard (routes return 404, hooks become no-ops). |
 | `UI_HISTORY_MAX` | `200` | Number of finished requests kept in the dashboard history. |
@@ -282,6 +300,9 @@ All parameters are environment variables; defaults in parentheses.
 | `llama_kv_proxy_restore_total` | counter | `model`, `outcome` | Restore candidate selection for big requests: `hit` / `miss`. |
 | `llama_kv_proxy_restore_ratio` | histogram | `model` | Fraction of the prompt covered by the restored cache. |
 | `llama_kv_proxy_slot_wait_seconds` | histogram | `model` | Time spent acquiring a backend slot. |
+| `llama_kv_proxy_context_reserved_tokens` | gauge | `backend`, `model` | Tokens reserved in a backend/model context by in-flight requests. |
+| `llama_kv_proxy_admission_oversized_total` | counter | `model` | Requests admitted over the context budget because they fit no empty pool. |
+| `llama_kv_proxy_estimated_prompt_tokens` | histogram | `model` | Estimated prompt tokens per request (context admission estimate). |
 | `llama_kv_proxy_saves_total` | counter | `model`, `outcome` | KV saves after big requests: `ok`, `save_error`, `save_failed`, `empty_capture`. |
 | `llama_kv_proxy_save_duration_seconds` | histogram | `model` | Backend slot save duration. |
 | `llama_kv_proxy_meta_files` / `llama_kv_proxy_meta_bytes` | gauge | — | Meta files on disk (count / total bytes); refreshed after startup, eviction, reconciliation and `/cache/clear`. |

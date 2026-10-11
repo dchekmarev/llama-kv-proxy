@@ -116,5 +116,7 @@ def sm(monkeypatch):
     # disturbing a test's set-up pool.
     client.is_router = AsyncMock(return_value=False)
     client.get_slots = AsyncMock(return_value=None)
+    # Context-size fallback (/v1/models meta.n_ctx): none by default.
+    client.get_model_ctx = AsyncMock(return_value=None)
     manager.set_clients([client])
     return manager

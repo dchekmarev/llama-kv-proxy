@@ -414,6 +414,35 @@ class LlamaClient:
         served = _served_model_id(entries)
         return [served] if served else []
 
+    async def get_model_ctx(self, model: str) -> int | None:
+        """The context size of ``model`` from /v1/models, None when unknown.
+
+        llama.cpp exposes it as ``meta.n_ctx``. The entry is matched by id;
+        failing that, a router's single loaded entry or a plain server's only
+        entry is used. Every other shape -- no listing, no meta object, a
+        non-int or non-positive n_ctx -- degrades to None so the caller keeps
+        its pool ungated, and the read never raises.
+        """
+        entries = _entries(await self.get_models())
+        if not entries:
+            return None
+        match = next((e for e in entries if _model_id(e) == model), None)
+        if match is None:
+            loaded = _loaded_ids(entries)
+            if len(loaded) == 1:
+                match = next((e for e in entries if _model_id(e) == loaded[0]), None)
+            elif len(entries) == 1:
+                match = entries[0]
+        if match is None:
+            return None
+        meta = match.get("meta")
+        if not isinstance(meta, dict):
+            return None
+        n_ctx = meta.get("n_ctx")
+        if isinstance(n_ctx, int) and not isinstance(n_ctx, bool) and n_ctx > 0:
+            return n_ctx
+        return None
+
     async def get_metrics(self, model: str | None = None) -> str | None:
         """The backend's raw /metrics text, None on any failure.
 

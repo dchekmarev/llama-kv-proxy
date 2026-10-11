@@ -296,6 +296,22 @@ UI_PREVIEW_MAX_CHARS = _env_int("UI_PREVIEW_MAX_CHARS", 2048)
 # (fetched on demand by the dashboard; dropped when the request ends).
 UI_PROMPT_FULL_MAX_CHARS = _env_int("UI_PROMPT_FULL_MAX_CHARS", 1048576)
 
+# Context-budget admission control: estimate the prompt's token count before
+# dispatch and reject a request that would not fit the backend's context, so an
+# oversized prompt fails fast instead of holding a slot for a whole prefill.
+# MAX_TOKENS is the generation budget reserved per request when the client sends
+# neither max_tokens nor n_predict; CONTEXT_ADMISSION_ENABLED turns the check
+# off. TOKENIZER_ENABLED/TOKENIZER_MODEL select the optional local Qwen
+# tokenizer (dashscope, see requirements-tokenizer.txt); TOKENS_PER_WORD and
+# PROMPT_TEMPLATE_MARGIN_TOKENS tune the word-count fallback used when it is off
+# or unavailable.
+MAX_TOKENS = _env_int("MAX_TOKENS", 32768)
+CONTEXT_ADMISSION_ENABLED = _env_bool("CONTEXT_ADMISSION_ENABLED", True)
+TOKENIZER_ENABLED = _env_bool("TOKENIZER_ENABLED", True)
+TOKENIZER_MODEL = os.getenv("TOKENIZER_MODEL", "qwen-turbo")
+TOKENS_PER_WORD = _env_float("TOKENS_PER_WORD", 1.3)
+PROMPT_TEMPLATE_MARGIN_TOKENS = _env_int("PROMPT_TEMPLATE_MARGIN_TOKENS", 64)
+
 # Service port
 PORT = _env_int("PORT", 8081)
 

@@ -1,0 +1,4 @@
+# Optional local prompt tokenizer for context-budget admission control.
+# The proxy falls back to a word-count estimate when it is absent, so this is
+# intentionally NOT in requirements.txt (CI and the default image stay lean).
+dashscope[tokenizer]==1.27.7

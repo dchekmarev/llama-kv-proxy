@@ -65,6 +65,7 @@ SLOT_WAIT_BUCKETS = (0.001, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60)
 SAVE_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1, 2.5, 10, 30, 120)
 RATIO_BUCKETS = (0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 1.0)
 PAUSE_DRAIN_BUCKETS = (0.1, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300)
+TOKEN_BUCKETS = (256, 1024, 4096, 16384, 32768, 65536, 131072)
 
 requests_total = Counter(
     f"{P}_requests_total",
@@ -205,6 +206,25 @@ pause_drain_seconds = Histogram(
     buckets=PAUSE_DRAIN_BUCKETS,
     registry=REGISTRY,
 )
+context_reserved_tokens = Gauge(
+    f"{P}_context_reserved_tokens",
+    "Tokens reserved in a backend/model context by in-flight requests.",
+    ["backend", "model"],
+    registry=REGISTRY,
+)
+admission_oversized_total = Counter(
+    f"{P}_admission_oversized_total",
+    "Requests admitted over the context budget because they fit no empty pool.",
+    ["model"],
+    registry=REGISTRY,
+)
+estimated_prompt_tokens = Histogram(
+    f"{P}_estimated_prompt_tokens",
+    "Estimated prompt tokens per request (context admission estimate).",
+    ["model"],
+    buckets=TOKEN_BUCKETS,
+    registry=REGISTRY,
+)
 
 # Valid restore-search tiers (restore_tier_total label values).
 TIERS = ("index", "t1_disk", "t2_blocks")
@@ -225,6 +245,7 @@ def reset() -> None:
         inflight_save_waits_total,
         backend_scrape_failures_total,
         pause_total,
+        admission_oversized_total,
     ):
         m.clear()
     for h in (
@@ -234,9 +255,18 @@ def reset() -> None:
         slot_wait_seconds,
         save_duration_seconds,
         pause_drain_seconds,
+        estimated_prompt_tokens,
     ):
         h.clear()
-    for g in (meta_files, meta_bytes, bin_bytes, slots_total, backend_up, paused):
+    for g in (
+        meta_files,
+        meta_bytes,
+        bin_bytes,
+        slots_total,
+        backend_up,
+        paused,
+        context_reserved_tokens,
+    ):
         g.clear()
 
 
