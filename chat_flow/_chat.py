@@ -30,25 +30,55 @@ async def chat_flow(
 ) -> Response:
     """Run the chat pipeline for an already-parsed JSON body.
 
-    Wraps :func:`_chat_once` in the pause retry loop: a pause that lands
-    before the attempt committed a response aborts it (PausedRetry), the loop
-    waits for the pause to end and re-runs the attempt from scratch, so a
-    backend restart or model reload under the pause never leaves a request on
-    stale state. The request group id, timestamp and request log are created
-    once, so a retry does not duplicate them.
+    Wraps :func:`_chat_once` in the retry loop. A pause that lands before the
+    attempt committed a response aborts it (PausedRetry); a retryable backend
+    failure before the commit aborts it too (BackendRetry). Either way the loop
+    waits/re-dispatches and re-runs the attempt from scratch, so a backend
+    restart or a stale pooled connection never leaves the client with a bounce
+    it did not have to see. The request group id, timestamp and request log are
+    created once, so a retry does not duplicate them; the retry budget is
+    BACKEND_RETRY_ATTEMPTS total attempts, spaced by exponential backoff.
     """
     t0 = time.time()
     t0_mono = time.monotonic()
     rid = request_id_var.get()
     ts = reqlog.new_group_ts()
     reqlog.log_file("request", rid, ts, data)
+    attempt = 0
     while True:
         await pause_mod.wait_not_paused()
         try:
-            return await _chat_once(sm, clients, data, rid, ts, t0, t0_mono)
+            return await _chat_once(
+                sm,
+                clients,
+                data,
+                rid,
+                ts,
+                t0,
+                t0_mono,
+                can_retry=attempt + 1 < chat_flow_pkg.BACKEND_RETRY_ATTEMPTS,
+            )
         except chat_flow_pkg.PausedRetry:
             log.info("chat_paused_retry rid=%s", rid)
+            # Not a backend failure: a pause re-runs the attempt with a fresh
+            # retry budget.
+            attempt = 0
             continue
+        except chat_flow_pkg.BackendRetry as e:
+            attempt += 1
+            delay = chat_flow_pkg.backoff_seconds(
+                attempt - 1, chat_flow_pkg.BACKEND_RETRY_BACKOFF_S
+            )
+            log.warning(
+                "chat_backend_retry rid=%s attempt=%d/%d delay=%.2fs: %s",
+                rid,
+                attempt,
+                chat_flow_pkg.BACKEND_RETRY_ATTEMPTS,
+                delay,
+                e,
+            )
+            if delay > 0:
+                await asyncio.sleep(delay)
 
 
 async def _prefetch_first_chunk(
@@ -83,6 +113,28 @@ async def _prefetch_first_chunk(
     return raw_iter, first
 
 
+async def _erase_stray(
+    sm: SlotManager, g: GSlot | None, gate_passed: bool
+) -> None:
+    """Erase a served slot's KV before a retry, when the backend was reached.
+
+    A failed attempt that had passed the backend gate may have left partial
+    state on its slot (a half-written prefill from an aborted dispatch). The
+    next attempt picks a slot of its own -- possibly this one -- so it must not
+    inherit the garbage. Before the gate the backend was never reached, so there
+    is nothing to erase (and erasing would only block up to CONNECT_TIMEOUT
+    against a backend that is down). A failed erase is logged and ignored: it
+    must not turn a retry into a failure.
+    """
+    if g is None or not gate_passed:
+        return
+    try:
+        client = sm.backends[g[0]]["client"]
+        await client.erase_slot(g[2], model=g[1])
+    except Exception:
+        log.debug("erase_before_retry_failed g=%s", g, exc_info=True)
+
+
 async def _chat_once(
     sm: SlotManager,
     clients: list[LlamaClient],
@@ -91,8 +143,9 @@ async def _chat_once(
     ts: str,
     t0: float,
     t0_mono: float,
+    can_retry: bool,
 ) -> Response:
-    """One attempt of the pipeline (re-run from scratch after a pause)."""
+    """One attempt of the pipeline (re-run after a pause or backend failure)."""
     messages: list[dict] = data.get("messages") or []
     stream = bool(data.get("stream", False))
     # A client opts a request out of the KV cache by sending cache_prompt:false
@@ -155,6 +208,12 @@ async def _chat_once(
         promstats.request_duration_seconds.labels(
             model=metric_model, stream="true" if stream else "false"
         ).observe(time.monotonic() - t0_mono)
+
+    def _backend_retry(reason: str) -> None:
+        """Count a proxy-issued retry (the attempt is about to be re-run)."""
+        promstats.backend_retries_total.labels(
+            model=metric_model, reason=reason
+        ).inc()
 
     def _killed(
         slot: GSlot | None = None, used_key: str | None = None
@@ -396,6 +455,13 @@ async def _chat_once(
             if resp.status_code != 200:
                 err_txt = await resp.aread()
                 await resp.aclose()
+                status = chat_flow_pkg._provider_error_status(resp.status_code)
+                if can_retry and status == 502:
+                    # A retryable upstream status: erase any partial state and
+                    # let the wrapper re-dispatch instead of bouncing the client.
+                    await _erase_stray(sm, g, gate_passed)
+                    _backend_retry("upstream_5xx")
+                    raise chat_flow_pkg.BackendRetry(f"backend {resp.status_code}")
                 promstats.requests_total.labels(
                     model=metric_model, stream="true", outcome="error"
                 ).inc()
@@ -407,7 +473,7 @@ async def _chat_once(
                 _observe_latency()
                 return chat_flow_pkg._error_response(
                     {"error": err_txt.decode("utf-8", "ignore")},
-                    chat_flow_pkg._provider_error_status(resp.status_code),
+                    status,
                 )
 
             # The first backend chunk is read here, before the response is
@@ -482,6 +548,15 @@ async def _chat_once(
                     out.get("status"),
                     out.get("message"),
                 )
+                status = chat_flow_pkg._provider_error_status(out.get("status"))
+                if can_retry and status == 502:
+                    # A transient provider 5xx: erase any partial state and let
+                    # the wrapper re-dispatch instead of bouncing the client.
+                    await _erase_stray(sm, g, gate_passed)
+                    _backend_retry("upstream_5xx")
+                    raise chat_flow_pkg.BackendRetry(
+                        f"provider error {out.get('status')}"
+                    )
                 body = {"error": out.get("message") or "provider error"}
                 if out.get("raw"):
                     body["raw"] = out["raw"]
@@ -489,10 +564,7 @@ async def _chat_once(
                 ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR,
                               error=str(out.get("message") or "provider error"))
                 _observe_latency()
-                return chat_flow_pkg._error_response(
-                    body,
-                    chat_flow_pkg._provider_error_status(out.get("status")),
-                )
+                return chat_flow_pkg._error_response(body, status)
 
             # The full backend body is the group's response.json (both sizes);
             # the assistant content is extracted for the prefix computation.
@@ -597,9 +669,21 @@ async def _chat_once(
         # below gives the slot back (no save), and no outcome is recorded --
         # the retry records the real one.
         raise
+    except chat_flow_pkg.BackendRetry:
+        # A retryable backend failure before the response committed (raised by
+        # the branches above, or by the transport handler below): unwind so the
+        # wrapper can re-dispatch. The finally gives the slot back, no save, and
+        # no outcome is recorded -- the retry records the real one.
+        raise
     except httpx.HTTPError as e:
-        # A connect/timeout failure: no backend response at all, so this is a
-        # genuine upstream failure (502 + Retry-After), not a proxy bug (500).
+        # A connect/timeout/read failure with no committed response: retry it
+        # while the budget lasts -- a stale pooled connection ("Server
+        # disconnected without sending a response") is the common case -- else
+        # report the genuine upstream failure (502 + Retry-After).
+        if can_retry:
+            await _erase_stray(sm, g, gate_passed)
+            _backend_retry("transport")
+            raise chat_flow_pkg.BackendRetry(str(e)) from e
         log.exception("chat_upstream_error g=%s key=%s", g, key[:16])
         _req_outcome("error")
         ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error=str(e))

@@ -11,6 +11,11 @@ Additionally:
 
 - acquire_for_request is wrapped in a timeout so it cannot hang forever if a
   slot is never released.
+- A retryable backend failure (a stale pooled connection, a restart, a
+  transient upstream 5xx) before the response commits does not bounce the
+  client with 502 + Retry-After: the attempt is re-run (bounded by
+  BACKEND_RETRY_ATTEMPTS, spaced by BACKEND_RETRY_BACKOFF_S) with the same
+  correlation id and request group (_retry).
 - For non-streaming and streaming big requests the save+meta runs in a
   background task (_BG_SAVE_TASKS), so the .bin write does not add latency
   and survives a client disconnect (the task owns and releases the slot).
@@ -66,6 +71,8 @@ from cache import bin_cache
 from core import promstats
 from core.config import (
     ACQUIRE_TIMEOUT,
+    BACKEND_RETRY_ATTEMPTS,
+    BACKEND_RETRY_BACKOFF_S,
     BIG_THRESHOLD_WORDS,
     BIN_CACHE_DIR,
     BIN_CACHE_MAX_MB,
@@ -147,6 +154,7 @@ from ._restore import (
     _unregister_pending_restore,
     _wait_for_inflight_save,
 )
+from ._retry import BackendRetry, backoff_seconds
 from ._save import _background_save, _save_and_write_meta
 from ._state import (
     _BG_SAVE_TASKS,
@@ -164,6 +172,8 @@ from ._stream import start_stream_task
 
 __all__ = [
     "ACQUIRE_TIMEOUT",
+    "BACKEND_RETRY_ATTEMPTS",
+    "BACKEND_RETRY_BACKOFF_S",
     "BIG_THRESHOLD_WORDS",
     "BIN_CACHE_DIR",
     "BIN_CACHE_MAX_MB",
@@ -192,6 +202,7 @@ __all__ = [
     "_READER_TASKS",
     "_RESTORE_ALIAS",
     "AsyncGenerator",
+    "BackendRetry",
     "GSlot",
     "JSONResponse",
     "KillToken",
@@ -233,6 +244,7 @@ __all__ = [
     "active_kills",
     "asyncio",
     "backend_gate",
+    "backoff_seconds",
     "bin_cache",
     "bind_kill",
     "chat_flow",

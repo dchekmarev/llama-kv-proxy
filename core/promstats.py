@@ -73,6 +73,13 @@ requests_total = Counter(
     ["model", "stream", "outcome"],
     registry=REGISTRY,
 )
+backend_retries_total = Counter(
+    f"{P}_backend_retries_total",
+    "Retries the proxy itself issued for a retryable backend failure before the "
+    "response committed, by reason (transport/upstream_5xx).",
+    ["model", "reason"],
+    registry=REGISTRY,
+)
 request_duration_seconds = Histogram(
     f"{P}_request_duration_seconds",
     "Total chat request duration (start to response end).",
@@ -234,6 +241,7 @@ def reset() -> None:
     """Clear every metric (test isolation)."""
     for m in (
         requests_total,
+        backend_retries_total,
         tokens_total,
         restore_total,
         restore_skipped_same_slot_total,

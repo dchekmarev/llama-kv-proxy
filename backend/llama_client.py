@@ -267,6 +267,11 @@ class LlamaClient:
         self.client = httpx.AsyncClient(
             base_url=self.url,
             timeout=_request_timeout(),
+            # A connection kept idle past this is reopened instead of reused: a
+            # pooled connection the backend (or a fronting proxy) closed first
+            # would otherwise fail with "Server disconnected without sending a
+            # response". See README "Backend unavailable".
+            limits=httpx.Limits(keepalive_expiry=config.KEEPALIVE_EXPIRY_S),
         )
         self._models = _ModelsCache()
         # Router mode is detected from the /v1/models shape and remembered.

@@ -93,7 +93,9 @@ The proxy forwards the client's request body to the backend verbatim (pass-throu
 How a dead or loading backend (refused / black-holed port, 5xx) surfaces:
 
 - Hold first: before dispatching (chat after slot acquire, pass-through before opening the upstream) the proxy probes the backend's `/health` (read phase `MODEL_ID_TIMEOUT`, connect phase `CONNECT_TIMEOUT`). Any non-5xx answer means "serving" — llama.cpp answers 503 while a model is loading, so a 5xx or a transport failure means "not serving yet". While not serving, the connection (and the slot) is held, re-probed every second, for up to `HOLD_TIMEOUT` seconds: a short outage is a long TTFT, not a failed turn. `HOLD_TIMEOUT=0` disables the wait (one probe, then 502).
-- On hold exhaustion, and on any later connect failure: `502` JSON `{"error": ...}` with `Retry-After: RETRY_AFTER_S`, so a retrying client (opencode and anything else honouring the header) waits out the outage instead of hammering. A refused connect fails within `CONNECT_TIMEOUT`.
+- Retry before 502: a retryable failure with no committed response is re-dispatched by the proxy itself, keeping the client connection open, up to `BACKEND_RETRY_ATTEMPTS` total attempts spaced by exponential `BACKEND_RETRY_BACKOFF_S` (2× each retry). Retryable: a transport error (a stale pooled connection, `Server disconnected without sending a response`, is the common one), a backend 5xx, and a provider error body carrying a 5xx. The served slot's partial KV is erased before the retry. Never retried: a `4xx` client fault (retrying repeats it), a proxy bug (`500`), and a mid-stream failure (the response is already committed). `BACKEND_RETRY_ATTEMPTS=1` disables the retry.
+- Stale pooled connections: the backend client drops an idle pooled connection after `KEEPALIVE_EXPIRY_S` (default 5) — below a typical backend/fronting-proxy idle timeout — so a connection the far side already closed is not reused; a racing close is still covered by the retry above.
+- After hold exhaustion, and on a retryable failure once the budget is spent: `502` JSON `{"error": ...}` with `Retry-After: RETRY_AFTER_S`, so a retrying client (opencode and anything else honouring the header) waits out the outage instead of hammering. A refused connect fails within `CONNECT_TIMEOUT`.
 - Pass-through `/{path}`: same hold, then the same `502` + `Retry-After` on exhaustion. Once the upstream response is open its status (incl. 5xx) is mirrored verbatim, without a proxy `Retry-After`; a transport failure mid-stream ends the response cleanly (logged).
 - Stream already open when the backend dies: SSE `data: {"error": {"message": "503 service unavailable: stream interrupted: ..."}}`; the prefix matches opencode's retryable patterns, so it retries. A killed request (`killed by operator`) and a stalled consumer are deliberately unmarked — retrying them is wrong.
 - No `Retry-After` on: a backend `4xx` (the status passes through unchanged, the body is re-shaped to `{"error": ...}`; a client fault does not go away on retry), an unexpected proxy bug (`500`), and the slot-exhaustion `503`.
@@ -220,7 +222,10 @@ All parameters are environment variables; defaults in parentheses.
 | `REQUEST_LOG_MAX_GROUPS` | `100` | Max number of request groups kept; oldest groups (all their files) are deleted first. `0` disables rotation. |
 | `REQUEST_TIMEOUT` | `1500` | HTTP timeout to the backends for the read/write/pool phases, seconds (the connect phase is `CONNECT_TIMEOUT`). |
 | `CONNECT_TIMEOUT` | `10` | Connect-phase timeout of a backend dispatch call, seconds: a refused or black-holed connect fails in this many seconds (fast 502) instead of waiting out `REQUEST_TIMEOUT`. Model-id and slot probes run separately with `MODEL_ID_TIMEOUT`. |
+| `KEEPALIVE_EXPIRY_S` | `5` | Idle time (seconds) after which the backend client drops a pooled connection instead of reusing it, avoiding a `Server disconnected without sending a response` on a connection the far side already closed. |
 | `RETRY_AFTER_S` | `300` | `Retry-After` header value (seconds) on 502 upstream-failure responses, so a retrying client waits out a backend outage instead of hammering the proxy. |
+| `BACKEND_RETRY_ATTEMPTS` | `3` | Total attempts (first + retries) per chat request for a retryable failure before the response commits (transport error or backend 5xx). 1 disables the proxy-side retry (first failure becomes 502 + `Retry-After`). |
+| `BACKEND_RETRY_BACKOFF_S` | `0.5` | Base delay (seconds) before the first retry; each further retry doubles it (0.5, 1, 2, …). 0 retries immediately. |
 | `HOLD_TIMEOUT` | `240` | Max seconds a request holds its connection (and its slot) while the picked backend is unreachable or unhealthy (5xx on `/health`, e.g. model loading); 502 + `Retry-After` after. 0 disables the wait. |
 | `ACQUIRE_TIMEOUT` | `1500` | Maximum wait for a free slot, seconds. |
 | `PAUSE_DEFAULT_S` | `60` | Pause length when `POST /proxy/pause` carries no/absent `seconds`, counted from activation. |
@@ -294,6 +299,7 @@ All parameters are environment variables; defaults in parentheses.
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `llama_kv_proxy_requests_total` | counter | `model`, `stream`, `outcome` | Chat requests by outcome: `ok`, `error`, `acquire_timeout`, `hold_timeout`, `client_disconnect`, `killed`. |
+| `llama_kv_proxy_backend_retries_total` | counter | `model`, `reason` | Proxy-issued retries of a retryable backend failure before the response committed: `transport` (connect/read) or `upstream_5xx`. |
 | `llama_kv_proxy_request_duration_seconds` | histogram | `model`, `stream` | Total request duration (start to response end). |
 | `llama_kv_proxy_ttft_seconds` | histogram | `model`, `stream` | Time to first token; for non-stream it equals the total duration. |
 | `llama_kv_proxy_tokens_total` | counter | `model`, `kind` | Backend-reported tokens: `prompt`, `completion`, `cached`. |

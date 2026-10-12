@@ -4,7 +4,8 @@
 Unified configuration for llama-kv-proxy:
 - BACKENDS: [{"url": "...", "n_slots": N}]
 - WORDS_PER_BLOCK, BIG_THRESHOLD_WORDS, LCP_TH
-- PORT, REQUEST_TIMEOUT, CONNECT_TIMEOUT, RETRY_AFTER_S, HOLD_TIMEOUT, MODEL_ID
+- PORT, REQUEST_TIMEOUT, CONNECT_TIMEOUT, KEEPALIVE_EXPIRY_S, RETRY_AFTER_S,
+  BACKEND_RETRY_ATTEMPTS, BACKEND_RETRY_BACKOFF_S, HOLD_TIMEOUT, MODEL_ID
 
 This module only reads the environment: it creates no directories and
 configures no logging at import time. Call init_runtime() at startup.
@@ -126,10 +127,28 @@ REQUEST_TIMEOUT = _env_float("REQUEST_TIMEOUT", 1500)
 # REQUEST_TIMEOUT.
 CONNECT_TIMEOUT = _env_float("CONNECT_TIMEOUT", 10)
 
+# Keep-alive expiry (seconds) of the pooled backend HTTP client. A connection
+# left idle longer than the backend's (or a fronting proxy's) idle timeout is
+# closed by the far side; reusing it then fails with a spurious "Server
+# disconnected without sending a response". Keep this below that idle timeout
+# to avoid the stale reuse; a racing close is still covered by the proxy-side
+# retry below. See README "Backend unavailable".
+KEEPALIVE_EXPIRY_S = max(0.0, _env_float("KEEPALIVE_EXPIRY_S", 5.0))
+
 # Retry-After header value (seconds) on 502 upstream-failure responses: a
 # retrying client waits out a backend outage (down, restarting, reloading)
 # instead of hammering the proxy. See README "Backend unavailable".
 RETRY_AFTER_S = _env_int("RETRY_AFTER_S", 300)
+
+# Proxy-side retry of a retryable backend failure (transport error or upstream
+# 5xx) that happens before any response byte reaches the client. Instead of
+# bouncing the client with 502 + Retry-After, the proxy re-runs the attempt
+# (up to BACKEND_RETRY_ATTEMPTS total, spaced by BACKEND_RETRY_BACKOFF_S with
+# exponential growth) and keeps the client connection open. 1 disables the
+# retry (the first failure is answered 502 + Retry-After as before). A
+# mid-stream failure is never retried: the response is already committed.
+BACKEND_RETRY_ATTEMPTS = max(1, _env_int("BACKEND_RETRY_ATTEMPTS", 3))
+BACKEND_RETRY_BACKOFF_S = max(0.0, _env_float("BACKEND_RETRY_BACKOFF_S", 0.5))
 
 # Max seconds a request holds its connection (and its slot) while the picked
 # backend is unreachable or unhealthy (5xx on /health, e.g. model loading):

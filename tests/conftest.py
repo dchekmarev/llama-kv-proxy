@@ -76,6 +76,16 @@ def _clean_pause():
 
 
 @pytest.fixture(autouse=True)
+def _fast_backend_retry(monkeypatch):
+    """Zero the backend-retry backoff so retry tests do not sleep.
+
+    A retry test that asserts the backoff schedule patches it explicitly (a
+    later monkeypatch wins over this one).
+    """
+    monkeypatch.setattr(chat_flow, "BACKEND_RETRY_BACKOFF_S", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def _clean_kill_registry():
     """Reset the kill registry between tests.
 

@@ -217,3 +217,21 @@ def test_prompt_template_margin_from_env(monkeypatch):
     finally:
         monkeypatch.delenv("PROMPT_TEMPLATE_MARGIN_TOKENS")
         importlib.reload(config)
+
+
+def test_backend_retry_defaults():
+    """The proxy-side retry and keep-alive knobs carry their defaults."""
+    assert config.KEEPALIVE_EXPIRY_S == pytest.approx(5.0)
+    assert config.BACKEND_RETRY_ATTEMPTS == 3
+    assert config.BACKEND_RETRY_BACKOFF_S == pytest.approx(0.5)
+
+
+def test_backend_retry_attempts_floor_is_one(monkeypatch):
+    """0 (or negative) attempts still means one attempt, never zero."""
+    monkeypatch.setenv("BACKEND_RETRY_ATTEMPTS", "0")
+    importlib.reload(config)
+    try:
+        assert config.BACKEND_RETRY_ATTEMPTS == 1
+    finally:
+        monkeypatch.delenv("BACKEND_RETRY_ATTEMPTS")
+        importlib.reload(config)
