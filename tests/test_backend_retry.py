@@ -139,6 +139,48 @@ async def test_transport_error_retries_are_bounded(sm, meta_dir):
 
 
 @pytest.mark.asyncio
+async def test_connect_error_is_retryable(sm, meta_dir):
+    """A refused connect never reached the backend: it is retried."""
+    client = sm.backends[0]["client"]
+    client.chat_completions = AsyncMock(
+        side_effect=[httpx.ConnectError("refused"), OK_BODY]
+    )
+
+    resp = await _chat(sm, "small request")
+
+    assert resp.status_code == 200
+    assert client.chat_completions.await_count == 2
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        httpx.ReadTimeout("no answer"),
+        httpx.WriteTimeout("upstream stuck"),
+        httpx.ReadError("backend reset mid-body"),
+        httpx.DecodingError("bad chunked body"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_ambiguous_transport_failure_is_not_retried(sm, meta_dir, exc):
+    """After the request was sent, the backend may have generated: no retry.
+
+    A read/write timeout or a connection drop is ambiguous -- the backend may
+    be mid/generating -- so it is answered 502 + Retry-After at once instead of
+    recomputing the answer. Only a failure provably before the backend acted
+    (connect/pool, stale pooled connection) is re-dispatched.
+    """
+    client = sm.backends[0]["client"]
+    client.chat_completions = AsyncMock(side_effect=exc)
+
+    resp = await _chat(sm, "small request")
+
+    assert resp.status_code == 502
+    assert resp.headers["Retry-After"] == str(config.RETRY_AFTER_S)
+    assert client.chat_completions.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_provider_5xx_is_retried_then_succeeds(sm, meta_dir):
     """A transient provider 5xx is retried before it is surfaced as 502."""
     client = sm.backends[0]["client"]

@@ -676,11 +676,15 @@ async def _chat_once(
         # no outcome is recorded -- the retry records the real one.
         raise
     except httpx.HTTPError as e:
-        # A connect/timeout/read failure with no committed response: retry it
-        # while the budget lasts -- a stale pooled connection ("Server
-        # disconnected without sending a response") is the common case -- else
-        # report the genuine upstream failure (502 + Retry-After).
-        if can_retry:
+        # A transport failure with no committed response: retry it only while
+        # the budget lasts and only when it provably happened before the backend
+        # acted -- a refused or timed-out connect, a pool timeout, or a stale
+        # pooled connection ("Server disconnected without sending a response",
+        # the common case) -- else report the genuine upstream failure (502 +
+        # Retry-After). A read/write timeout or a connection reset after the
+        # request was sent means generation may have run, and a retry would just
+        # recompute the answer.
+        if can_retry and chat_flow_pkg.is_retryable_transport_error(e):
             await _erase_stray(sm, g, gate_passed)
             _backend_retry("transport")
             raise chat_flow_pkg.BackendRetry(str(e)) from e

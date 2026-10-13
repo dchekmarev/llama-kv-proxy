@@ -154,7 +154,11 @@ from ._restore import (
     _unregister_pending_restore,
     _wait_for_inflight_save,
 )
-from ._retry import BackendRetry, backoff_seconds
+from ._retry import (
+    BackendRetry,
+    backoff_seconds,
+    is_retryable_transport_error,
+)
 from ._save import _background_save, _save_and_write_meta
 from ._state import (
     _BG_SAVE_TASKS,
@@ -251,6 +255,7 @@ __all__ = [
     "codecs",
     "hs",
     "httpx",
+    "is_retryable_transport_error",
     "json",
     "kill_request",
     "log",
