@@ -71,7 +71,7 @@ llama.cpp intentionally has no endpoint to delete files from `--slot-save-path` 
 - on meta eviction/clear (by key);
 - by LRU (oldest last-use first, where last-use = the meta timestamp, refreshed on both save and restore) — after every slot save (asynchronously, without delaying the response; a new check does not start until the previous one finishes) and periodically every `EVICT_INTERVAL_S` seconds.
 
-Orphaned `.bin` files (no matching `.meta`) are removed first. A `.bin` written within the last `BIN_SAVE_GRACE_S` seconds is treated as an in-flight save and skipped. Every `BIN_RECONCILE_INTERVAL_S` seconds the proxy reconciles in both directions: stale metas without a `.bin` and orphaned `.bin` files without a meta are removed.
+Orphaned `.bin` files (no matching `.meta`) are removed first. A `.bin` written within the last `BIN_SAVE_GRACE_S` seconds is treated as an in-flight save and skipped. Every `BIN_RECONCILE_INTERVAL_S` seconds the proxy reconciles in both directions: stale metas without a `.bin` and orphaned `.bin` files without a meta are removed. The pass is skipped while any backend fails its `/health` probe: a down or restarting backend can have a transiently empty slot-save directory, and a reconcile run then would wipe the cache index instead of the caches.
 
 llama.cpp may also write a `.ckpt` prompt-checkpoint sidecar next to each saved slot blob (see [ggml-org/llama.cpp#24028](https://github.com/ggml-org/llama.cpp/pull/24028)). The proxy treats the sidecar as part of its `.bin`: its size counts toward the `BIN_CACHE_MAX_MB` cap, it is evicted together with the `.bin`, and a `.ckpt` whose `.bin` is gone is dropped as an orphan (fresh ones are protected by the `BIN_SAVE_GRACE_S` window).
 

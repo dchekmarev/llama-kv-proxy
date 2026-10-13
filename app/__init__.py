@@ -56,6 +56,7 @@ from core.logging_setup import setup_logging
 
 from ._asgi import app, lifespan
 from .background import (
+    _backends_serving,
     _bin_reconcile_loop,
     _check_stuck_slots,
     _delete_backend_caches,
@@ -111,6 +112,7 @@ __all__ = [
     "UI_ENABLED",
     "LlamaClient",
     "SlotManager",
+    "_backends_serving",
     "_bin_reconcile_loop",
     "_check_stuck_slots",
     "_delete_backend_caches",

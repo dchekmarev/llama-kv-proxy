@@ -217,12 +217,34 @@ async def _eviction_loop() -> None:
         await asyncio.sleep(app_pkg.EVICT_INTERVAL_S)
 
 
+async def _backends_serving() -> bool:
+    """True when every backend answers /health right now.
+
+    The .bin reconcile must not run while a backend is unreachable: a restart
+    in progress can leave its slot-save directory empty or half-written, and a
+    reconcile would then delete every meta whose .bin is momentarily missing
+    (the restore can never be verified while the backend is down). A live probe
+    (not the last poll result) is used, so an outage that started seconds after
+    a successful poll still gates the pass. An empty client list is "not
+    serving": never mutate the cache index on startup races.
+    """
+    clients = app_pkg.app.state.clients
+    if not clients:
+        return False
+    for client in clients:
+        if not await client.probe():
+            return False
+    return True
+
+
 async def _bin_reconcile_loop() -> None:
     """Reconcile metas and .bin files in both directions, every interval.
 
     Drops a meta whose .bin is gone (the restore can never succeed) and a .bin
     whose meta is gone (nothing references it). Runs only when the .bin cache
-    directory is mounted.
+    directory is mounted, and only while every backend is serving: a down or
+    restarting backend may have a transiently empty slot-save directory, and a
+    reconcile run then would drop the cache index, not the caches.
     """
     if app_pkg.BIN_RECONCILE_INTERVAL_S <= 0:
         return
@@ -230,6 +252,9 @@ async def _bin_reconcile_loop() -> None:
         await asyncio.sleep(app_pkg.BIN_RECONCILE_INTERVAL_S)
         await pause_mod.wait_not_paused()
         if not app_pkg.BIN_CACHE_DIR:
+            continue
+        if not await _backends_serving():
+            log.warning("bin_reconcile_skipped backend_down")
             continue
         try:
             result = await asyncio.to_thread(
