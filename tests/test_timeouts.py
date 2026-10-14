@@ -75,6 +75,24 @@ def test_hold_timeout_from_env(monkeypatch):
         importlib.reload(config)
 
 
+def test_health_probe_backoff_defaults():
+    assert config.HEALTH_PROBE_BACKOFF_S == pytest.approx(0.0)
+    assert config.HEALTH_PROBE_MAX_S == pytest.approx(30.0)
+
+
+def test_health_probe_backoff_from_env(monkeypatch):
+    monkeypatch.setenv("HEALTH_PROBE_BACKOFF_S", "0.5")
+    monkeypatch.setenv("HEALTH_PROBE_MAX_S", "8")
+    importlib.reload(config)
+    try:
+        assert config.HEALTH_PROBE_BACKOFF_S == pytest.approx(0.5)
+        assert config.HEALTH_PROBE_MAX_S == pytest.approx(8.0)
+    finally:
+        monkeypatch.delenv("HEALTH_PROBE_BACKOFF_S")
+        monkeypatch.delenv("HEALTH_PROBE_MAX_S")
+        importlib.reload(config)
+
+
 def test_connect_timeout_from_env(monkeypatch):
     monkeypatch.setenv("CONNECT_TIMEOUT", "42")
     importlib.reload(config)

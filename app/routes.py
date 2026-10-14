@@ -481,7 +481,7 @@ async def passthrough(path: str, request: Request) -> Response:
     await pause_mod.wait_not_paused()
     # Same hold as the chat path: wait for the backend to serve before opening
     # the upstream (no kill token: the pass-through is not killable).
-    if not await chat_flow.backend_gate(client, None):
+    if not await chat_flow.backend_gate(client, None, app_pkg.app.state.sm):
         log.error("passthrough_hold_timeout path=%s", path)
         return chat_flow._error_response(
             {"error": "backend unavailable, please retry later"}, 502

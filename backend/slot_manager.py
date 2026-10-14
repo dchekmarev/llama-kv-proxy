@@ -41,6 +41,7 @@ import time
 from collections import deque
 from collections.abc import Callable
 
+from backend.health import BackendHealth
 from backend.llama_client import RESTORE_ERROR
 from core import pause as pause_mod
 from core import promstats
@@ -140,10 +141,13 @@ class SlotManager:
         self._total_ctx: dict[tuple[int, str], int] = {}
         self._reserved: dict[tuple[int, str], int] = {}
         self._slot_reserved: dict[GSlot, int] = {}
-        # Backend index -> the slot poll's last liveness verdict. Absent (never
-        # polled) counts as up; slot candidates on a down backend are skipped
-        # while a healthy backend can serve the model.
-        self._backend_up: dict[int, bool] = {}
+        # Per-backend liveness: the shared health state (single source of truth
+        # for selection, the poll and the hold), keyed by backend index. Absent
+        # (never recorded) counts as up; slot candidates on a down backend are
+        # skipped while a healthy backend can serve the model.
+        self.health = BackendHealth()
+        # The clients, index aligned with config.BACKENDS (set_clients).
+        self._clients: list = []
 
     # --- wiring ---------------------------------------------------------------
 
@@ -154,18 +158,26 @@ class SlotManager:
         so a backend index always resolves to a slot-pool namespace.
         """
         self.backends = []
+        self._clients = list(clients)
         for i in range(max(len(clients), len(BACKENDS))):
             entry = dict(BACKENDS[i]) if i < len(BACKENDS) else {}
             entry["client"] = clients[i] if i < len(clients) else None
             self.backends.append(entry)
 
+    def client_index(self, client: object) -> int | None:
+        """The backend index of ``client`` (None when it is not one of ours)."""
+        try:
+            return self._clients.index(client)
+        except ValueError:
+            return None
+
     def set_backend_up(self, backend_index: int, up: bool) -> None:
-        """Record the slot poll's liveness verdict for one backend."""
-        self._backend_up[backend_index] = up
+        """Record the poll's liveness verdict for one backend (shared state)."""
+        self.health.set_up(backend_index, up)
 
     def backend_up(self, backend_index: int) -> bool:
-        """The last poll's liveness verdict; a never-polled backend counts up."""
-        return self._backend_up.get(backend_index, True)
+        """The last liveness verdict; a never-recorded backend counts up."""
+        return self.health.up(backend_index)
 
     def set_backend_slots(
         self, backend_index: int, model: str, slots: list[dict]

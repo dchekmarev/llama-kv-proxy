@@ -10,6 +10,10 @@ the first backend -- exactly the pre-health behavior, with the HOLD governing
 the request.
 """
 
+import asyncio
+import contextlib
+import time
+from itertools import pairwise
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -17,6 +21,7 @@ import pytest
 import app as app_module
 import chat_flow
 from backend import slot_manager as sm_module
+from backend.health import BackendHealth
 from backend.slot_manager import SlotManager
 
 
@@ -132,3 +137,136 @@ async def test_poll_records_backend_liveness(backends):
 
     assert sm.backend_up(0) is False
     assert sm.backend_up(1) is True
+
+
+# --- shared health: single-flight prober, recovery wakeup, backoff ----------
+
+
+async def _drain(task: asyncio.Task) -> None:
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_concurrent_waiters_share_one_prober():
+    """N concurrent waiters on a down backend run ONE prober, not N loops."""
+    health = BackendHealth()
+    health.set_up(0, False)
+    probe = AsyncMock(return_value=False)
+    tasks = [
+        asyncio.create_task(
+            health.wait_up(0, timeout=0.4, probe=probe, interval=0.05)
+        )
+        for _ in range(5)
+    ]
+    await asyncio.sleep(0.16)
+
+    assert health.waiters(0) == 5
+    assert health.prober_running(0)
+    assert probe.await_count < len(tasks)
+
+    for task in tasks:
+        await _drain(task)
+    assert health.waiters(0) == 0
+    await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_all_waiters_wake_on_recovery():
+    """Every parked waiter returns True once the shared prober sees recovery."""
+    health = BackendHealth()
+    health.set_up(0, False)
+    calls = 0
+
+    async def probe() -> bool:
+        nonlocal calls
+        calls += 1
+        return calls >= 3
+
+    tasks = [
+        asyncio.create_task(health.wait_up(0, timeout=2.0, probe=probe, interval=0.02))
+        for _ in range(4)
+    ]
+
+    assert await asyncio.gather(*tasks) == [True, True, True, True]
+    assert health.waiters(0) == 0
+    await asyncio.sleep(0)
+    assert not health.prober_running(0)
+
+
+@pytest.mark.asyncio
+async def test_timed_out_waiter_leaves_nothing_behind():
+    """A waiter that exhausts its budget cancels the idle prober and detaches."""
+    health = BackendHealth()
+    health.set_up(0, False)
+    probe = AsyncMock(return_value=False)
+
+    assert await health.wait_up(0, timeout=0.05, probe=probe, interval=0.01) is False
+    assert health.waiters(0) == 0
+    assert not health.prober_running(0)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_waiter_leaves_nothing_behind():
+    """A killed waiter detaches cleanly (no waiter count, no prober task)."""
+    health = BackendHealth()
+    health.set_up(0, False)
+    probe = AsyncMock(return_value=False)
+    task = asyncio.create_task(
+        health.wait_up(0, timeout=5.0, probe=probe, interval=0.01)
+    )
+    await asyncio.sleep(0.03)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert health.waiters(0) == 0
+    assert not health.prober_running(0)
+
+
+@pytest.mark.asyncio
+async def test_backoff_grows_and_caps():
+    """Probe cadence doubles from the base up to the cap while down."""
+    health = BackendHealth(backoff_s=0.05, max_s=0.2)
+    health.set_up(0, False)
+    times: list[float] = []
+
+    async def probe() -> bool:
+        times.append(time.monotonic())
+        return False
+
+    task = asyncio.create_task(
+        health.wait_up(0, timeout=5.0, probe=probe, interval=0.001)
+    )
+    await asyncio.sleep(0.7)
+    await _drain(task)
+
+    gaps = [b - a for a, b in pairwise(times)]
+    assert len(gaps) >= 3
+    assert gaps[0] == pytest.approx(0.05, abs=0.04)
+    assert gaps[-1] > gaps[0]
+    assert gaps[-1] <= 0.2 + 0.06
+
+
+@pytest.mark.asyncio
+async def test_zero_backoff_keeps_fixed_interval():
+    """Backoff 0 (default) keeps the fast fixed cadence for prompt recovery."""
+    health = BackendHealth(backoff_s=0.0, max_s=30.0)
+    health.set_up(0, False)
+    times: list[float] = []
+
+    async def probe() -> bool:
+        times.append(time.monotonic())
+        return False
+
+    task = asyncio.create_task(
+        health.wait_up(0, timeout=5.0, probe=probe, interval=0.02)
+    )
+    await asyncio.sleep(0.25)
+    await _drain(task)
+
+    gaps = [b - a for a, b in pairwise(times)]
+    assert len(gaps) >= 5
+    assert max(gaps) < 0.12

@@ -411,7 +411,7 @@ async def _chat_once(
         # queue. A kill during the hold unwinds through the RequestKilled
         # handler below (499).
         if not await chat_flow_pkg.race_pause(
-            chat_flow_pkg.backend_gate(client, kill_token)
+            chat_flow_pkg.backend_gate(client, kill_token, sm)
         ):
             log.error("hold_timeout g=%s key=%s", g, key[:16])
             promstats.requests_total.labels(

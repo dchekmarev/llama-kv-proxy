@@ -5,7 +5,8 @@ Unified configuration for llama-kv-proxy:
 - BACKENDS: [{"url": "...", "n_slots": N}]
 - WORDS_PER_BLOCK, BIG_THRESHOLD_WORDS, LCP_TH
 - PORT, REQUEST_TIMEOUT, CONNECT_TIMEOUT, KEEPALIVE_EXPIRY_S, RETRY_AFTER_S,
-  BACKEND_RETRY_ATTEMPTS, BACKEND_RETRY_BACKOFF_S, HOLD_TIMEOUT, MODEL_ID
+  BACKEND_RETRY_ATTEMPTS, BACKEND_RETRY_BACKOFF_S, HOLD_TIMEOUT,
+  HEALTH_PROBE_BACKOFF_S, HEALTH_PROBE_MAX_S, MODEL_ID
 
 This module only reads the environment: it creates no directories and
 configures no logging at import time. Call init_runtime() at startup.
@@ -156,6 +157,15 @@ BACKEND_RETRY_BACKOFF_S = max(0.0, _env_float("BACKEND_RETRY_BACKOFF_S", 0.5))
 # with 502 + Retry-After right away. 0 (or negative) disables the wait (one
 # probe, then 502). See README "Backend unavailable".
 HOLD_TIMEOUT = max(0.0, _env_float("HOLD_TIMEOUT", 240))
+
+# Backoff for the shared per-backend health prober while a backend stays down.
+# The first failed probe is followed by HEALTH_PROBE_BACKOFF_S, doubling each
+# probe up to HEALTH_PROBE_MAX_S, to stop hammering /health during a long
+# outage. 0 (default) keeps the fixed HOLD_PROBE_INTERVAL_S cadence (prompt
+# recovery). MAX_S is ignored while BACKOFF_S is 0. See README "Backend
+# unavailable".
+HEALTH_PROBE_BACKOFF_S = max(0.0, _env_float("HEALTH_PROBE_BACKOFF_S", 0.0))
+HEALTH_PROBE_MAX_S = max(0.0, _env_float("HEALTH_PROBE_MAX_S", 30.0))
 
 # Pause API (POST /proxy/pause): stop dispatching new work, drain in-flight
 # committed work, then hold every new request until resume (manual) or until
