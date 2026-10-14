@@ -14,7 +14,7 @@ pass-through: /slots, /health, /tokenize, /completion, ... reach the backend):
 - GET  /metrics             Prometheus text (proxy registry + backends)
 - GET  /version             build identifier
 - GET  /proxy/ui[/]         the live dashboard (page, state, request, events)
-- ANY  /{path:path}         pass-through to the first backend
+- ANY  /{path:path}         pass-through to the first live backend
 
 Everything blocking (meta scans, .bin cleanup) runs in a worker thread so the
 event loop keeps serving requests, and every background job is a task that is

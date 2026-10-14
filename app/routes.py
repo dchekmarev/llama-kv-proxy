@@ -465,14 +465,17 @@ async def _iter_passthrough(upstream: Any) -> AsyncIterator[bytes]:
 async def passthrough(path: str, request: Request) -> Response:
     """Forward an unhandled path to the first backend, streaming the response.
 
-    The first backend only, consistently with /v1/models: the pass-through
-    serves the native llama.cpp endpoints (slots, tokenize, completion, ...),
-    which are single-server APIs. The upstream status is mirrored and the body
-    is never buffered; before the upstream is opened the backend is held the
-    same way as on the chat path (HOLD_TIMEOUT, then 502 + Retry-After), and a
-    transport failure mid-stream ends the response cleanly.
+    The first live backend (index 0 when none is known down), consistently
+    with /v1/models: the pass-through serves the native llama.cpp endpoints
+    (slots, tokenize, completion, ...), which are single-server APIs. The
+    upstream status is mirrored and the body is never buffered; before the
+    upstream is opened the backend is held the same way as on the chat path
+    (HOLD_TIMEOUT, then 502 + Retry-After), and a transport failure mid-stream
+    ends the response cleanly.
     """
-    client = app_pkg.app.state.clients[0]
+    client = chat_flow._health_order(
+        app_pkg.app.state.sm, app_pkg.app.state.clients
+    )[0]
     # Same admission hold as the chat path: a request that arrives during a
     # pause waits for it instead of touching a backend that is restarting.
     await pause_mod.wait_not_paused()

@@ -80,6 +80,10 @@ llama.cpp may also write a `.ckpt` prompt-checkpoint sidecar next to each saved 
 
 A router backend (`llama-server --models-preset`) serves each model on its own child process with its own slots. The proxy discovers per-model slots via `GET /slots?model=X` and keys slot pools by `(backend, model, slot)`, so the same slot id is a different physical slot per model. `n_slots` in `BACKENDS` is only a bootstrap hint, not functional.
 
+### Health-aware backend selection
+
+With several `BACKENDS`, the slot poll's liveness verdict (`llama_kv_proxy_backend_up`, set per poll pass) drives selection: model-id/alias resolution and the pass-through (`/{path}`) consult the backends in health order and skip a backend currently known down, and slot candidates exclude a down backend's slots while any backend serving the model is up. When every backend is down (or only one is configured) the first backend is used exactly as before, and the hold/retry paths above govern the outage. Before the first poll there is no verdict and a backend never polled counts as up.
+
 ### Request forwarding
 
 The proxy forwards the client's request body to the backend verbatim (pass-through) and injects the following fields:
@@ -269,7 +273,7 @@ All parameters are environment variables; defaults in parentheses.
 | `PORT` | `8081` | Proxy port. |
 | `LOG_LEVEL` | `INFO` | Log level. |
 
-> **Multi-backend note:** when a request omits `model`, the cache key is built from the first backend's model id. If you run multiple backends with different models, requests dispatched to the other backends may use a wrong cache key — keep all backends on the same model, or always send `model` in the request.
+> **Multi-backend note:** when a request omits `model`, the cache key is built from the model id of the first backend consulted (health order, see *Health-aware backend selection*). If you run multiple backends with different models, requests dispatched to the other backends may use a wrong cache key — keep all backends on the same model, or always send `model` in the request.
 
 ## Endpoints
 
@@ -292,7 +296,7 @@ All parameters are environment variables; defaults in parentheses.
 | GET | `/cache/stats` | Cache file count, total size, hit/miss counters. |
 | POST | `/cache/clear` | Delete all local meta files (and best-effort purge backend `.bin` files). |
 | GET | `/metrics` | Prometheus target: proxy `llama_kv_proxy_*` metrics followed by the merged backend `/metrics` across all active (loaded) models, each backend metric carrying `model` and `backend` labels. `?model=X` filters both halves to a single model; a down backend/model is skipped, never failing the scrape. |
-| any | `/{path}` | Forwarded to the first backend as-is (native llama.cpp endpoints: `/slots?model=...`, `/health`, `/tokenize`, …), with the response streamed back. |
+| any | `/{path}` | Forwarded to the first live backend as-is (health order, see *Health-aware backend selection*; native llama.cpp endpoints: `/slots?model=...`, `/health`, `/tokenize`, …), with the response streamed back. |
 
 ## Metrics
 

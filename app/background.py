@@ -146,8 +146,10 @@ async def _poll_backend(backend_index: int, client: Any) -> None:
             _publish_slots_gauge(backend_index, model, slots)
             await _check_stuck_slots(backend_index, model, client, slots)
         promstats.backend_up.labels(backend=backend).set(1)
+        app_pkg.app.state.sm.set_backend_up(backend_index, True)
     except Exception as e:  # noqa: BLE001
         promstats.backend_up.labels(backend=backend).set(0)
+        app_pkg.app.state.sm.set_backend_up(backend_index, False)
         log.warning("poll_slots_failed backend=%s: %s", backend, e)
 
 

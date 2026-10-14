@@ -11,6 +11,38 @@ from . import _state
 log = _state.log
 
 
+def _health_order(sm: SlotManager, clients: list[LlamaClient]) -> list[LlamaClient]:
+    """Backends that may answer a resolution, healthy ones first (index order).
+
+    A backend currently known down is skipped: its cached model listing is
+    stale at best. When every backend is down (or there is only one) the first
+    client alone is returned -- the pre-health behavior, so the HOLD and retry
+    paths still govern the outage.
+    """
+    up = [client for i, client in enumerate(clients) if sm.backend_up(i)]
+    return up or clients[:1]
+
+
+async def _first_resolved_alias(
+    sm: SlotManager, clients: list[LlamaClient], name: str
+) -> str | None:
+    """The first healthy backend's alias resolution, None if none answers."""
+    for client in _health_order(sm, clients):
+        resolved = await client.resolve_model_id_cached(name)
+        if resolved is not None:
+            return resolved
+    return None
+
+
+async def _first_model_id(sm: SlotManager, clients: list[LlamaClient]) -> str:
+    """The first healthy backend's model id, "unknown" if none answers."""
+    for client in _health_order(sm, clients):
+        mid = await client.get_model_id_cached()
+        if mid != "unknown":
+            return mid
+    return "unknown"
+
+
 async def _resolve_effective_model(
     sm: SlotManager,
     clients: list[LlamaClient],
@@ -33,12 +65,12 @@ async def _resolve_effective_model(
             # is served whether or not a model is loaded, so an alias resolves
             # during a restart too, and it stays unambiguous with several models
             # in the preset.
-            resolved = await clients[0].resolve_model_id_cached(client_model)
+            resolved = await _first_resolved_alias(sm, clients, client_model)
             if resolved is None:
                 # The name is not in the preset. A plain single-model backend
                 # may still ignore the requested name and serve its only model,
                 # so fall back to that when it is unambiguous.
-                mid = await clients[0].get_model_id_cached()
+                mid = await _first_model_id(sm, clients)
                 if mid != "unknown" and sm.discovered_models() == {mid}:
                     resolved = mid
             if resolved is not None:
@@ -65,6 +97,6 @@ async def _resolve_effective_model(
     else:
         # TTL-cached model id: no per-request HTTP round-trip. "unknown"
         # (never resolved) falls back to MODEL_ID.
-        mid = await clients[0].get_model_id_cached()
+        mid = await _first_model_id(sm, clients)
         effective_model = mid if mid != "unknown" else chat_flow.MODEL_ID
     return effective_model, no_cache

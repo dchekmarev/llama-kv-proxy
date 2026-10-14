@@ -141,7 +141,7 @@ from ._kill import (
     unregister as unregister_kill,
 )
 from ._lru import _purge_backend_files, _schedule_lru_check
-from ._model import _resolve_effective_model
+from ._model import _health_order, _resolve_effective_model
 from ._pause import PausedRetry, race_pause
 from ._restore import (
     _find_restore_candidate,
@@ -224,6 +224,7 @@ __all__ = [
     "_error_response",
     "_find_restore_candidate",
     "_finish_inflight_save",
+    "_health_order",
     "_log_prefix_group",
     "_lru_check_in_flight",
     "_new_decision",

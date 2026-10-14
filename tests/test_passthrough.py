@@ -14,6 +14,7 @@ import httpx
 import pytest
 
 import app as app_module
+from backend.slot_manager import SlotManager
 from core import config
 
 
@@ -57,7 +58,12 @@ def _mock_client(chunks, status=200, headers=None):
 
 
 def _setup(clients):
+    # Both are set by the lifespan together: the pass-through picks its client
+    # through the health order, which reads the SlotManager's liveness verdicts
+    # (a fresh SlotManager never polled = every backend up).
     app_module.app.state.clients = clients
+    app_module.app.state.sm = SlotManager()
+    app_module.app.state.sm.set_clients(clients)
 
 
 async def _passthrough(path, method="GET", query="", body=b"", headers=None):
@@ -173,6 +179,27 @@ async def test_passthrough_uses_first_backend():
 
     first.client.build_request.assert_called_once()
     second.client.build_request.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_passthrough_skips_known_down_backend():
+    """Health order: a backend the slot poll marked down is skipped, and when
+    every backend is down the first one is used as before (HOLD governs)."""
+    first, _, _ = _mock_client([b"first"])
+    second, _, _ = _mock_client([b"second"])
+    _setup([first, second])
+    app_module.app.state.sm.set_backend_up(0, False)
+
+    await _passthrough("tokenize")
+
+    first.client.build_request.assert_not_called()
+    second.client.build_request.assert_called_once()
+
+    # All down: fall back to the first backend, never an empty pick.
+    app_module.app.state.sm.set_backend_up(1, False)
+    await _passthrough("tokenize")
+
+    first.client.build_request.assert_called_once()
 
 
 @pytest.mark.asyncio

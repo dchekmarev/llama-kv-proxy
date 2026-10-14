@@ -140,6 +140,10 @@ class SlotManager:
         self._total_ctx: dict[tuple[int, str], int] = {}
         self._reserved: dict[tuple[int, str], int] = {}
         self._slot_reserved: dict[GSlot, int] = {}
+        # Backend index -> the slot poll's last liveness verdict. Absent (never
+        # polled) counts as up; slot candidates on a down backend are skipped
+        # while a healthy backend can serve the model.
+        self._backend_up: dict[int, bool] = {}
 
     # --- wiring ---------------------------------------------------------------
 
@@ -154,6 +158,14 @@ class SlotManager:
             entry = dict(BACKENDS[i]) if i < len(BACKENDS) else {}
             entry["client"] = clients[i] if i < len(clients) else None
             self.backends.append(entry)
+
+    def set_backend_up(self, backend_index: int, up: bool) -> None:
+        """Record the slot poll's liveness verdict for one backend."""
+        self._backend_up[backend_index] = up
+
+    def backend_up(self, backend_index: int) -> bool:
+        """The last poll's liveness verdict; a never-polled backend counts up."""
+        return self._backend_up.get(backend_index, True)
 
     def set_backend_slots(
         self, backend_index: int, model: str, slots: list[dict]
@@ -205,13 +217,24 @@ class SlotManager:
         return any(m == model for _backend, m in self._pools)
 
     def _slots_for_model(self, model: str) -> list[GSlot]:
-        """Every discovered slot of a model, across all backends."""
-        return [
+        """Every discovered slot of a model, across all backends.
+
+        While any backend serving the model is not known down, the slots of
+        the known-down ones are dropped: they are unusable and would only
+        trigger the HOLD while a healthy backend can serve the request. All
+        serving backends down (or none polled yet) keeps every slot, exactly
+        as before, so the HOLD still governs the request.
+        """
+        slots = [
             (backend, m, sid)
             for (backend, m), ids in self._pools.items()
             if m == model
             for sid in ids
         ]
+        up = {backend for backend, _m, _sid in slots if self.backend_up(backend)}
+        if up:
+            return [g for g in slots if g[0] in up]
+        return slots
 
     def aggregated_state(self) -> list[dict]:
         """Every discovered slot as one dict, for /proxy/health and /proxy/slots.
