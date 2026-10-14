@@ -20,7 +20,7 @@ import pytest
 
 from backend import slot_manager as sm_module
 from backend.llama_client import RESTORE_ERROR
-from backend.slot_manager import SlotManager
+from backend.slot_manager import QueueFullError, SlotManager
 from core.promstats import counter_sum, restore_skipped_same_slot_total
 
 
@@ -251,6 +251,75 @@ async def test_cancelled_waiter_does_not_block_fifo(sm):
     done, _ = await asyncio.wait([w2], timeout=2.0)
     assert done == {w2}, "the live waiter must be woken past the cancelled one"
     sm.release(w2.result()[0])
+
+
+@pytest.mark.asyncio
+async def test_queue_full_fails_fast(sm, monkeypatch):
+    """At MAX_WAITING a request that would park fails fast (QueueFullError)
+    instead of holding its connection; a request that can take a slot is not
+    gated, so the cap must not leave a free slot unserved."""
+    monkeypatch.setattr(sm_module, "MAX_WAITING", 1)
+    sm.set_backend_slots(0, "model1", [{"id": 0}])  # single slot
+    holder, _, _, _ = await sm.acquire_for_request("model1")
+
+    w1 = asyncio.create_task(sm.acquire_for_request("model1"))
+    for _ in range(10):
+        await asyncio.sleep(0.01)
+    assert len(sm._waiters["model1"]) == 1, "the first waiter must park"
+
+    with pytest.raises(QueueFullError):
+        await sm.acquire_for_request("model1")
+    assert len(sm._waiters["model1"]) == 1, "the rejected request must not park"
+
+    sm.release(holder)
+    done, _ = await asyncio.wait([w1], timeout=2.0)
+    assert done == {w1}, "the parked waiter must still be served"
+    sm.release(w1.result()[0])
+    assert not sm._waiters.get("model1"), "no waiter may remain registered"
+
+
+@pytest.mark.asyncio
+async def test_queue_cap_zero_is_unbounded(sm, monkeypatch):
+    """MAX_WAITING=0 restores the previous unbounded queue."""
+    monkeypatch.setattr(sm_module, "MAX_WAITING", 0)
+    sm.set_backend_slots(0, "model1", [{"id": 0}])  # single slot
+    holder, _, _, _ = await sm.acquire_for_request("model1")
+
+    waiters = [
+        asyncio.create_task(sm.acquire_for_request("model1")) for _ in range(3)
+    ]
+    for _ in range(10):
+        await asyncio.sleep(0.01)
+    assert len(sm._waiters["model1"]) == 3, "cap 0 must not reject parking"
+
+    sm.release(holder)
+    for w in waiters:
+        done, _ = await asyncio.wait([w], timeout=2.0)
+        assert done == {w}
+        sm.release(w.result()[0])
+    assert not sm._waiters.get("model1")
+
+
+@pytest.mark.asyncio
+async def test_queue_cap_does_not_gate_immediate_acquire(sm, monkeypatch):
+    """The cap counts waiters across all models but only gates parking: a
+    request for another model with a free slot is served immediately."""
+    monkeypatch.setattr(sm_module, "MAX_WAITING", 1)
+    sm.set_backend_slots(0, "model2", [{"id": 0}])  # single slot
+    holder, _, _, _ = await sm.acquire_for_request("model2")
+    w1 = asyncio.create_task(sm.acquire_for_request("model2"))
+    for _ in range(10):
+        await asyncio.sleep(0.01)
+    assert len(sm._waiters["model2"]) == 1, "the cap is reached"
+
+    g, _lock, _, _ = await sm.acquire_for_request("model1")  # free slot
+    assert g[1] == "model1"
+    sm.release(g)
+
+    sm.release(holder)
+    done, _ = await asyncio.wait([w1], timeout=2.0)
+    assert done == {w1}
+    sm.release(w1.result()[0])
 
 
 def test_oldest_slot_selected_by_usage(sm):

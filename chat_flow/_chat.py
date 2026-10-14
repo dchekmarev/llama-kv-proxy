@@ -355,6 +355,19 @@ async def _chat_once(
                 {"error": "all slots busy, please retry later"},
                 status_code=503,
             )
+        except chat_flow_pkg.QueueFullError:
+            log.warning("queue_full model=%s", effective_model)
+            promstats.requests_total.labels(
+                model=metric_model, stream="true" if stream else "false",
+                outcome="queue_full",
+            ).inc()
+            ui_obs.req_end(rid, status=ui_obs.STATUS_ERROR, error="queue_full")
+            _observe_latency()
+            chat_flow_pkg.unregister_kill(rid)
+            return JSONResponse(
+                {"error": "too many waiting requests, please retry later"},
+                status_code=503,
+            )
         except chat_flow_pkg.RequestKilled:
             killed_flag = True
             return _killed()

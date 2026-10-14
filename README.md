@@ -48,6 +48,7 @@ By default the search first consults an in-memory index of the metas' prefix has
 
 - A free slot (never used yet) is preferred; when none are free, the least-recently-used one is taken.
 - Each slot is guarded with an async lock; if all slots are busy the request waits up to `ACQUIRE_TIMEOUT` seconds and then gets HTTP 503.
+- At most `MAX_WAITING` requests may wait for a slot at once, across all models; a request that would have to park when the cap is reached gets HTTP 503 (`too many waiting requests, please retry later`) instead of holding its connection. `MAX_WAITING=0` disables the cap. A request that can take a slot immediately is never rejected by the cap.
 - For a big request with a match, the cache is restored into the chosen slot before the chat. If the backend reports the file missing (404), the stale meta is dropped; other failures keep the meta (a retry can succeed).
 
 ### Parallel requests and context budget admission
@@ -56,7 +57,7 @@ llama.cpp `--parallel N` with `--kv-unified` gives the N slots **one shared cont
 
 - Before picking a slot it estimates the prompt's tokens and reserves `estimated_prompt_tokens + min(MAX_TOKENS, client cap)` per admitted request, where the client cap is `max_tokens` or `n_predict` (absent => `MAX_TOKENS`); a request is admitted only when `reserved + need <= n_ctx`.
 - `n_ctx` comes from `GET /slots` (`n_ctx`), falling back to `/v1/models` `meta.n_ctx`; with neither, the pool is ungated (no context size to admit against).
-- When the budget is exhausted while a slot is free, the request waits FIFO with the other waiters up to `ACQUIRE_TIMEOUT`, then gets `503` (same as all-slots-busy).
+- When the budget is exhausted while a slot is free, the request waits FIFO with the other waiters up to `ACQUIRE_TIMEOUT`, then gets `503` (same as all-slots-busy). This wait is bounded by `MAX_WAITING` like any other parked request.
 - A single request that fits no empty pool can never be admitted by waiting, so it is admitted best-effort (a free slot if one exists, else it parks) and counted in `admission_oversized_total`.
 - The estimate is taken only while `CONTEXT_ADMISSION_ENABLED`: the local tokenizer when available (see Quick start), else a word-count estimate. It is per-process state — single worker only, same caveat as the slot manager.
 
@@ -228,6 +229,7 @@ All parameters are environment variables; defaults in parentheses.
 | `BACKEND_RETRY_BACKOFF_S` | `0.5` | Base delay (seconds) before the first retry; each further retry doubles it (0.5, 1, 2, …). 0 retries immediately. |
 | `HOLD_TIMEOUT` | `240` | Max seconds a request holds its connection (and its slot) while the picked backend is unreachable or unhealthy (5xx on `/health`, e.g. model loading); 502 + `Retry-After` after. 0 disables the wait. |
 | `ACQUIRE_TIMEOUT` | `1500` | Maximum wait for a free slot, seconds. |
+| `MAX_WAITING` | `64` | Maximum number of requests parked waiting for a free slot, across all models. A request that would have to park at the cap fails fast with HTTP 503 instead of holding its connection; one that can take a slot immediately is not gated. `0` disables the cap. |
 | `PAUSE_DEFAULT_S` | `60` | Pause length when `POST /proxy/pause` carries no/absent `seconds`, counted from activation. |
 | `PAUSE_MAX_S` | `0` | Upper bound on the pause length, seconds; `0` disables the cap. |
 | `SAVE_WAIT_TIMEOUT` | `30` | Max seconds a big request waits for an in-flight save of a prefix of its own conversation before giving up on the restore (the previous message's meta lands only after its `.bin` write). `0` disables the wait. |
@@ -298,7 +300,7 @@ All parameters are environment variables; defaults in parentheses.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `llama_kv_proxy_requests_total` | counter | `model`, `stream`, `outcome` | Chat requests by outcome: `ok`, `error`, `acquire_timeout`, `hold_timeout`, `client_disconnect`, `killed`. |
+| `llama_kv_proxy_requests_total` | counter | `model`, `stream`, `outcome` | Chat requests by outcome: `ok`, `error`, `acquire_timeout`, `hold_timeout`, `client_disconnect`, `queue_full`, `killed`. |
 | `llama_kv_proxy_backend_retries_total` | counter | `model`, `reason` | Proxy-issued retries of a retryable backend failure before the response committed: `transport` (connect/stale connection) or `upstream_5xx`. |
 | `llama_kv_proxy_request_duration_seconds` | histogram | `model`, `stream` | Total request duration (start to response end). |
 | `llama_kv_proxy_ttft_seconds` | histogram | `model`, `stream` | Time to first token; for non-stream it equals the total duration. |

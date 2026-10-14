@@ -168,6 +168,12 @@ PAUSE_MAX_S = max(0.0, _env_float("PAUSE_MAX_S", 0))
 # Timeout for waiting on a free slot when all slots are busy.
 ACQUIRE_TIMEOUT = _env_float("ACQUIRE_TIMEOUT", 1500)
 
+# Maximum number of requests parked waiting for a free slot, across all models.
+# A request that cannot take a slot immediately is failed fast with 503 once
+# this many waiters are queued, instead of holding its connection and body.
+# 0 disables the cap (unbounded queue). See README "Slot selection".
+MAX_WAITING = max(0, _env_int("MAX_WAITING", 64))
+
 # Max seconds a big request waits for an in-flight save of a prefix of its own
 # conversation before giving up on the restore. The client treats [DONE] as the
 # end of the response and sends the continuation immediately, but the previous

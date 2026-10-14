@@ -44,7 +44,12 @@ from collections.abc import Callable
 from backend.llama_client import RESTORE_ERROR
 from core import pause as pause_mod
 from core import promstats
-from core.config import BACKENDS, SKIP_RESTORE_SAME_SLOT, SLOT_FRESHEN_INTERVAL_S
+from core.config import (
+    BACKENDS,
+    MAX_WAITING,
+    SKIP_RESTORE_SAME_SLOT,
+    SLOT_FRESHEN_INTERVAL_S,
+)
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +62,15 @@ GSlot = tuple[int, str, int]
 # attempted (no restore key). The sentinels are opaque values, so the outcome
 # is opaque here too and the call site compares it.
 RestoreOutcome = object
+
+
+class QueueFullError(Exception):
+    """Raised when a request would park but MAX_WAITING waiters already wait.
+
+    Raised before any slot is taken, so the caller owns no lock; the
+    request fails fast instead of holding its connection in the queue.
+    """
+
 
 # Fallback for a model no poll has discovered yet: slot 0 of the first
 # backend. It keeps such a request working (and cacheable under its own
@@ -393,13 +407,24 @@ class SlotManager:
             not self._is_busy(g) and self._fits(g, need_tokens) for g in candidates
         )
 
+    def _waiting_count(self) -> int:
+        """Number of requests parked across every model's queue."""
+        return sum(len(queue) for queue in self._waiters.values())
+
     async def _park(self, model: str, need_tokens: int | None = None) -> None:
         """Wait for a release of the model's pool, in FIFO order.
 
         The queue is the wait list: it is what makes the wake order fair,
         and dropping a cancelled or timed out waiter from it keeps the next
         release from serving a request that is already gone.
+
+        The global cap gates only parking: a request that can take a slot
+        never reaches here, so an available slot is still served while the
+        queue is full. At the cap the request fails fast (QueueFullError)
+        rather than holding its connection.
         """
+        if MAX_WAITING > 0 and self._waiting_count() >= MAX_WAITING:
+            raise QueueFullError()
         queue = self._waiters.setdefault(model, deque())
         fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         entry = (fut, need_tokens)

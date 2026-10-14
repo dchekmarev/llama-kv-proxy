@@ -66,7 +66,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import hashing as hs
 from backend.llama_client import RESTORE_MISSING, LlamaClient
-from backend.slot_manager import GSlot, SlotManager
+from backend.slot_manager import GSlot, QueueFullError, SlotManager
 from cache import bin_cache
 from core import promstats
 from core.config import (
@@ -212,6 +212,7 @@ __all__ = [
     "KillToken",
     "LlamaClient",
     "PausedRetry",
+    "QueueFullError",
     "RequestKilled",
     "Response",
     "SlotManager",
