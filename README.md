@@ -10,7 +10,7 @@ A proxy in front of llama.cpp that makes long-context chat and IDE workflows fas
 
 ## Why it's needed
 
-llama.cpp provides "slots," each holding a conversation's KV cache, so repeated requests with the same or a very similar prefix skip recomputing the whole prompt and continue from the first mismatching token. In real teams the number of users can easily exceed the number of available slots (e.g., 20 developers but only 4 slots), so naive routing causes random slot reuse and cache overwrites that waste time and GPU/CPU cycles. This proxy steers requests to the right slot, saves evicted caches to disk, and restores them on demand, so long prompts are not recomputed from scratch each time. For 30–60k-token contexts typical of project-wide IDE assistants, restoring a previously cached context takes seconds instead of the minutes a full recompute would.
+llama.cpp provides "slots," each holding a conversation's KV cache, so repeated requests with the same or a very similar prefix skip recomputing the whole prompt and continue from the first mismatching token. In real teams the number of users can easily exceed the number of available slots (e.g., 20 developers but only 4 slots), so naive routing causes random slot reuse and cache overwrites that waste time and GPU/CPU cycles. This proxy steers requests to the right slot, saves evicted caches to disk, and restores them on demand, so long prompts are not recomputed from scratch each time. For 30–60k-token contexts typical of project-wide IDE assistants, a restored cache means llama.cpp re-prefills only the changed tail — typically a few hundred tokens instead of the whole prompt (see [Real reuse vs. restore metrics](#real-reuse-vs-restore-metrics)).
 
 ## Features
 
@@ -44,6 +44,21 @@ A candidate must cover at least `LCP_TH` of the request. Both tiers filter by `m
 
 By default the search first consults an in-memory index of the metas' prefix hashes (`META_INDEX_ENABLED`): a tier-1 hit is an O(n) set lookup instead of a disk scan, validated against the on-disk meta on hit. A miss (or an empty index, or old blocks-only metas that are not indexed) falls back to the two-tier on-disk scan, so results never lose a candidate the legacy path would find.
 
+### Real reuse vs. restore metrics
+
+The restore metrics describe the proxy's candidate selection, **not** llama.cpp's actual KV reuse:
+
+- `llama_kv_proxy_restore_total{outcome}` counts big requests that found a usable restore candidate (`hit`) or not (`miss`).
+- `llama_kv_proxy_restore_ratio` is the fraction of the **request** covered by the matched cached prefix, scored on the proxy's own per-message/block hashes and gated by `LCP_TH`. It is an **upper bound** on real reuse.
+
+What saves compute is llama.cpp re-prefilling only the tokens past the cache's common prefix. A restore can load without buying much when the token-level common prefix is shorter than the hash-level match: the proxy hashes raw messages and word-blocks, while llama.cpp tokenizes the chat-template-rendered prompt, so a word-level match need not be token-level. SWA models add a second gap (see *`--swa-full`* under Quick start).
+
+Measured on one production deployment (llama.cpp router, one slot, Qwen3.8-27B Q6_K; ~5,800 completed tasks, ~1,070 restores):
+
+- Of restored continuations with a **>20k-token** context (974 observed), 90.3% reused ≥90% of it, 8.7% reused 50–90%, and 0.9% reused <50%.
+- Median reused share of the released context: 98.4% (20–50k tokens), 99.4% (50–90k), 99.6% (>90k); median re-prefill ~450 tokens.
+- Proxy-side, over ~36 h of proxy logs, 12.8% of big requests had no candidate (`miss`), all on short or never-cached prefixes.
+
 ### Slot selection
 
 - A free slot (never used yet) is preferred; when none are free, the least-recently-used one is taken.
@@ -51,7 +66,7 @@ By default the search first consults an in-memory index of the metas' prefix has
 - At most `MAX_WAITING` requests may wait for a slot at once, across all models; a request that would have to park when the cap is reached gets HTTP 503 (`too many waiting requests, please retry later`) instead of holding its connection. `MAX_WAITING=0` disables the cap. A request that can take a slot immediately is never rejected by the cap.
 - For a big request with a match, the cache is restored into the chosen slot before the chat. If the backend reports the file missing (404), the stale meta is dropped; other failures keep the meta (a retry can succeed).
 
-### Parallel requests and context budget admission
+### Context-budget admission
 
 llama.cpp `--parallel N` with `--kv-unified` gives the N slots **one shared context** of `-c` tokens: admitting N requests by slot count alone lets them collectively exceed it (backend `500 "Context size has been exceeded"`). The proxy budgets the shared context instead:
 
@@ -105,6 +120,11 @@ How a dead or loading backend (refused / black-holed port, 5xx) surfaces:
 - Stream already open when the backend dies: SSE `data: {"error": {"message": "503 service unavailable: stream interrupted: ..."}}`; the prefix matches opencode's retryable patterns, so it retries. A killed request (`killed by operator`) and a stalled consumer are deliberately unmarked — retrying them is wrong.
 - No `Retry-After` on: a backend `4xx` (the status passes through unchanged, the body is re-shaped to `{"error": ...}`; a client fault does not go away on retry), an unexpected proxy bug (`500`), and the slot-exhaustion `503`.
 
+### Model resolution
+
+- **Aliases.** A client `model` string with no discovered slot pool (e.g. an alias like `default` that llama.cpp resolves to the real model) is mapped to a model id so it shares the slot pool and cache namespace with real-name requests. The mapping uses the backend's own preset table — a name matches a model's `id` or one of its declared `aliases` in `/v1/models`, which is exactly what the backend routes on. That table is served whether or not a model is loaded, so an alias resolves during a backend restart, and it stays unambiguous with several models in the preset (a name two models both claim resolves to nothing). A name outside the preset falls back to the single detected model, which a plain single-model backend may serve regardless of the requested name. When neither applies the name goes upstream unchanged — the backend may still serve it — but the request is proxied without cache treatment, so the alias never becomes a cache namespace: since the key is `sha256(model_id + "\n" + prefix)`, such a namespace would reuse none of the cached prefixes and would outlive the outage in the on-disk metas. That window logs a `model_alias_unresolved` WARNING.
+- **Model id discovery.** The backend model id is the loaded model on a router (`llama-server --models-preset`, which reports a per-model `status`), and the first entry on a plain single-model backend (whose entries carry no `status`). A router with nothing loaded resolves to `unknown` rather than to the first preset entry — that entry names a different model, and using it would fork the cache namespace. A pool is never keyed `unknown`: while the id is unresolvable the previously discovered pool is kept, so a backend restart cannot merge every model into one namespace. Alias resolution and the model id share one TTL cache, so a client that always sends an alias costs one `/v1/models` call per `MODEL_ID_TTL`, not one per request.
+
 ### Pause
 
 `POST /proxy/pause` stops the proxy for a maintenance window (backend restart,
@@ -139,6 +159,17 @@ Body (optional JSON object): `{"seconds": <number>, "reason": "<string>"}`.
 While held, a request connection sends no bytes, so a client's own request
 timeout must outlast the pause (same caveat as `HOLD_TIMEOUT`).
 
+### Killing a request
+
+An operator can kill a request by its correlation id — the `X-Request-ID` header (client-supplied, or generated and echoed back on the response):
+
+- `GET /proxy/requests` lists the killable requests with their stage (`queued` or `generating`).
+- `POST /proxy/requests/{rid}/kill` kills one: a queued request is dropped from the slot queue, a generating one has its backend call aborted. The slot (if any) is released without a cache write. The call returns `{"rid", "killed": true, "stage"}`; an unknown id returns `404 {"error": "unknown request id"}`.
+- The killed request itself is answered `499` (`{"error": "killed"}`, non-stream) or an SSE error event (`killed by operator`) for a stream.
+- Pass-through (`/{path}`) requests are not killable.
+
+There is no authentication: anyone who can reach the proxy can drop any request.
+
 ## Quick start
 
 1) Start llama.cpp (https://github.com/ggml-org/llama.cpp) with slots and a cache directory:
@@ -155,7 +186,10 @@ This enables the OpenAI-compatible HTTP server, a pool of 4 slots, and a directo
 llama-server -m ./gemma.gguf -np 4 --slot-save-path /var/lib/llama-slots --host 0.0.0.0 --port 8080 --swa-full
 ```
 
-Without it, the SWA layers keep a cache of only `n_swa` cells, i.e. the last window, so restoring a long saved prefix buys you nothing in those layers and the cache hits this proxy reports are not backed by real reuse. With it, the SWA layers get a full `n_ctx` cache, which costs extra VRAM. It is a no-op for non-SWA models — llama.cpp selects a plain KV cache there, whose constructor takes no `swa_full` — so it is safe to omit unless your model is SWA. If you change the flag, delete the old files in `--slot-save-path` first: the saved state is tied to the cache layout.
+- Without it, the SWA layers keep only `n_swa` cells (the last window), so restoring a long saved prefix buys nothing in those layers: the cache hits the proxy reports are not backed by real reuse (see [Real reuse vs. restore metrics](#real-reuse-vs-restore-metrics)).
+- With it, the SWA layers get a full `n_ctx` cache, which costs extra VRAM.
+- It is a no-op for non-SWA models — llama.cpp selects a plain KV cache there, whose constructor takes no `swa_full` — so it is safe to omit unless your model is SWA.
+- If you change the flag, delete the old files in `--slot-save-path` first: the saved state is tied to the cache layout.
 
 2) Run the proxy next to it:
 
@@ -168,7 +202,7 @@ python3 -m app  # or: uvicorn app:app --host 0.0.0.0 --port 8081
 
 The accurate local prompt-token estimator (context-budget admission) uses the optional `dashscope` tokenizer: `pip install -r requirements-tokenizer.txt`. It is not required — without it the proxy falls back to a deterministic word-count estimate.
 
-Run the proxy with a **single worker** (the default). The slot manager keeps per-process state (locks, LRU marks); multiple workers would each track slots independently and could route two requests to the same slot.
+Run the proxy with a **single worker** (the default): the slot manager keeps per-process state (locks, LRU marks), so multiple workers would track slots independently (see [Limitations](#limitations--caveats)).
 
 Your clients should call the proxy's `/v1/chat/completions` endpoint; the proxy handles matching, slot selection, save/restore, and streaming vs non-streaming automatically:
 
@@ -239,7 +273,7 @@ All parameters are environment variables; defaults in parentheses.
 | `PAUSE_DEFAULT_S` | `60` | Pause length when `POST /proxy/pause` carries no/absent `seconds`, counted from activation. |
 | `PAUSE_MAX_S` | `0` | Upper bound on the pause length, seconds; `0` disables the cap. |
 | `SAVE_WAIT_TIMEOUT` | `30` | Max seconds a big request waits for an in-flight save of a prefix of its own conversation before giving up on the restore (the previous message's meta lands only after its `.bin` write). `0` disables the wait. |
-| `MODEL_ID` | `llama.cpp` | Fallback model id returned by `/v1/models` when the backend is unavailable, and the namespace of a model-less request whose backend id is unknown. It is also the cache namespace of a restore, so two different models sharing it can restore each other's KV: change it when you swap the served model. Client `model` aliases are mapped through the backend preset table instead (see *Model aliases*). |
+| `MODEL_ID` | `llama.cpp` | Fallback model id returned by `/v1/models` when the backend is unavailable, and the namespace of a model-less request whose backend id is unknown. It is also the cache namespace of a restore, so two different models sharing it can restore each other's KV: change it when you swap the served model. Client `model` aliases are mapped through the backend preset table instead (see [Model resolution](#model-resolution)). |
 | `MODEL_ID_TTL` | `60` | Backend model-id cache TTL, seconds. |
 | `MODEL_ID_TIMEOUT` | `5` | Model-id fetch timeout, seconds. |
 | `UNKNOWN_MODEL_ID_RETRY` | `5` | Retry interval while the model id is unknown, seconds. |
@@ -311,8 +345,8 @@ All parameters are environment variables; defaults in parentheses.
 | `llama_kv_proxy_request_duration_seconds` | histogram | `model`, `stream` | Total request duration (start to response end). |
 | `llama_kv_proxy_ttft_seconds` | histogram | `model`, `stream` | Time to first token; for non-stream it equals the total duration. |
 | `llama_kv_proxy_tokens_total` | counter | `model`, `kind` | Backend-reported tokens: `prompt`, `completion`, `cached`. |
-| `llama_kv_proxy_restore_total` | counter | `model`, `outcome` | Restore candidate selection for big requests: `hit` / `miss`. |
-| `llama_kv_proxy_restore_ratio` | histogram | `model` | Fraction of the prompt covered by the restored cache. |
+| `llama_kv_proxy_restore_total` | counter | `model`, `outcome` | Big requests that found a usable restore candidate (`hit`) or not (`miss`). |
+| `llama_kv_proxy_restore_ratio` | histogram | `model` | Fraction of the **request** covered by the matched cached prefix (proxy-side, from per-message/block hashing); an upper bound on llama.cpp's real reuse. See [Real reuse vs. restore metrics](#real-reuse-vs-restore-metrics). |
 | `llama_kv_proxy_slot_wait_seconds` | histogram | `model` | Time spent acquiring a backend slot. |
 | `llama_kv_proxy_context_reserved_tokens` | gauge | `backend`, `model` | Tokens reserved in a backend/model context by in-flight requests. |
 | `llama_kv_proxy_admission_oversized_total` | counter | `model` | Requests admitted over the context budget because they fit no empty pool. |
@@ -333,7 +367,10 @@ All parameters are environment variables; defaults in parentheses.
 | `llama_kv_proxy_pause_total` | counter | `action` | Pause transitions: `activate`, `extend`, `resume`, `expire`. |
 | `llama_kv_proxy_pause_drain_seconds` | histogram | — | Time from the pause request to activation (drain of committed work). |
 
-Label cardinality is bounded by design: `model`, `backend`, `stream`, `outcome`, `tier`, `reason` and `state` are small fixed sets; request ids and cache keys never appear in labels. A `model` the proxy could not resolve to a real model id is counted under `model="unresolved"` rather than under the client's own string, so a client cannot mint a new time series per request by varying that field.
+Label cardinality is bounded by design:
+
+- `model`, `backend`, `stream`, `outcome`, `tier`, `reason` and `state` are small fixed sets; request ids and cache keys never appear in labels.
+- A `model` the proxy could not resolve to a real model id is counted under `model="unresolved"` rather than under the client's own string, so a client cannot mint a new time series per request by varying that field.
 
 ## Project structure
 
@@ -383,8 +420,6 @@ Run it on a trusted network (single host, private LAN, tailnet) or behind an aut
 - **Multi-backend:** see the note in Configuration — keep all backends on the same model, or always send `model`.
 - **`.bin` cleanup requires a mount.** llama.cpp has no delete endpoint; without mounting `--slot-save-path` and setting `BIN_CACHE_DIR`, `.bin` files are only purged best-effort via the (mostly no-op) `DELETE /slots` fallback.
 - **`REASONING_IN_KEY` is off by default.** Enabling it changes the cache key for every message carrying a reasoning field, so previously cached entries stop matching until re-cached (deliberate key churn, only when the flag is turned on).
-- **Model aliases.** A client `model` string with no discovered slot pool (e.g. an alias like `default` that llama.cpp resolves to the real model) is mapped to a model id so it shares the slot pool and cache namespace with real-name requests. The mapping uses the backend's own preset table — a name matches a model's `id` or one of its declared `aliases` in `/v1/models`, which is exactly what the backend routes on. That table is served whether or not a model is loaded, so an alias resolves during a backend restart, and it stays unambiguous with several models in the preset (a name two models both claim resolves to nothing). A name outside the preset falls back to the single detected model, which a plain single-model backend may serve regardless of the requested name. When neither applies the name goes upstream unchanged — the backend may still serve it — but the request is proxied without cache treatment, so the alias never becomes a cache namespace: since the key is `sha256(model_id + "\n" + prefix)`, such a namespace would reuse none of the cached prefixes and would outlive the outage in the on-disk metas. That window logs a `model_alias_unresolved` WARNING.
-- **Model id discovery.** The backend model id is the loaded model on a router (`llama-server --models-preset`, which reports a per-model `status`), and the first entry on a plain single-model backend (whose entries carry no `status`). A router with nothing loaded resolves to `unknown` rather than to the first preset entry — that entry names a different model, and using it would fork the cache namespace. A pool is never keyed `unknown`: while the id is unresolvable the previously discovered pool is kept, so a backend restart cannot merge every model into one namespace. Alias resolution and the model id share one TTL cache, so a client that always sends an alias costs one `/v1/models` call per `MODEL_ID_TTL`, not one per request.
 
 ## Acknowledgments / Inspiration
 
