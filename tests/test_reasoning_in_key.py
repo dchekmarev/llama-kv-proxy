@@ -610,7 +610,7 @@ async def _stream_save(sm, monkeypatch, flag: bool, reasoning_field: str = "reas
     resp = FakeResp(chunks)
     messages = [{"role": "user", "content": "hi"}]
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True, messages=messages
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True, messages=messages
     )
     _ = [c async for c in gen]
     await asyncio.sleep(0.2)

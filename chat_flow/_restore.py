@@ -6,7 +6,6 @@ import asyncio
 
 import chat_flow
 import hashing as hs
-from backend.llama_client import LlamaClient
 from core import promstats
 
 from . import _state
@@ -86,7 +85,7 @@ async def _select_restore_candidate(
     prefix_hashes: list[str],
     blocks: list[str],
     model_id: str,
-    do_cache: bool,
+    do_restore: bool,
     no_cache: bool,
     n_words: int,
     decision: dict,
@@ -96,7 +95,7 @@ async def _select_restore_candidate(
     # big requests restore or save, so the candidate search is lazy.
     restore_key: str | None = None
     restore_ratio: float | None = None
-    if do_cache:
+    if do_restore:
         cand = await chat_flow._find_restore_candidate(prefix_hashes, blocks, model_id)
         if cand is None and await chat_flow._wait_for_inflight_save(prefix_hashes):
             decision["wait_inflight_save"] = True
@@ -135,12 +134,10 @@ async def _select_restore_candidate(
 
 
 async def _settle_restore(
-    client: LlamaClient,
     slot_id: int,
     model_id: str,
     restored: object,
     used_key: str | None,
-    no_cache: bool,
     decision: dict,
 ) -> None:
     # A restore is only attempted when a key was selected, so both branches
@@ -167,14 +164,8 @@ async def _settle_restore(
         # retry can succeed, so keep the meta.
         log.warning("restore_failed_kept_meta key=%s", used_key[:16])
 
-    # A successful restore already set the slot's prompt to the correct prefix,
-    # so it is left untouched. In every other case (small request, big request
-    # with no restore hit, or a failed/missing restore) the slot may still hold
-    # a stale or oversized prompt from a previous conversation; starting a chat
-    # on top of it can wedge llama.cpp in PROCESSING_PROMPT (the slot never
-    # finishes and the server busy-loops). Clear the slot first. A no-cache
-    # request is proxied onto the slot untouched, so it never erases.
-    erase_done = (not no_cache) and restored is not True and chat_flow.ERASE_BEFORE_CHAT
-    decision["erase_done"] = erase_done
-    if erase_done:
-        await client.erase_slot(slot_id, model=model_id)
+    # No pre-chat erase: llama.cpp resets the slot itself, both on a restore
+    # (server-context.cpp clears the prompt and seq_rm's the sequence before
+    # loading) and on a miss (a cache_prompt:true chat keeps only the common
+    # prefix and drops the rest). On a miss an erasure would also throw away
+    # the prefix llama.cpp could still reuse from the slot.

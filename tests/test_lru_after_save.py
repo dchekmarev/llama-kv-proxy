@@ -91,7 +91,7 @@ async def test_big_stream_save_triggers_lru_check(sm, meta_dir, lru_env):
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
     _ = [c async for c in gen]
     await _pump()

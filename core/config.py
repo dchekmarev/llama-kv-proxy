@@ -256,15 +256,6 @@ BIN_SAVE_GRACE_S = _env_float("BIN_SAVE_GRACE_S", 10)
 # caches via the subsumed-metas logic. 0 disables the check.
 MIN_BIN_SIZE_VALID = _env_int("MIN_BIN_SIZE_VALID", 1)
 
-# Erase a slot's in-memory KV cache (action=erase) before dispatching any chat
-# that was NOT preceded by a successful restore. A successful restore already
-# sets the slot's prompt to the correct prefix, so it is skipped. Otherwise the
-# slot may still hold a stale or oversized prompt from a previous conversation;
-# starting a chat on top of it can wedge llama.cpp in PROCESSING_PROMPT (the
-# slot never finishes and the server busy-loops). On by default (correctness
-# over latency): a big request with no restore hit reprocesses its prompt.
-ERASE_BEFORE_CHAT = _env_bool("ERASE_BEFORE_CHAT", True)
-
 # Skip a pre-chat restore when the picked slot already holds the target key's
 # KV: it is the slot that just saved that key (a save does not clear the
 # slot), or the key was restored there and the slot was not used since. The

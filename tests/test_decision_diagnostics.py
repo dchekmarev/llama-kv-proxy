@@ -140,7 +140,7 @@ def _decision(sm, is_big=False):
             "stale_meta_dropped": False,
         },
         "wait_inflight_save": False,
-        "erase_done": False,
+        "cache_write": True,
         "slot": {"backend": 0, "model": "m1", "id": 0},
         "slot_before_chat": None,
     }

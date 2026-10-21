@@ -84,7 +84,7 @@ async def test_normal_stream_delivers_all_and_releases(sm, no_meta):
     resp = FakeResp(chunks, delay=0.005)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
 
     received = [c async for c in gen]
@@ -122,7 +122,7 @@ async def test_slot_released_when_client_disconnects(sm, no_meta, monkeypatch):
     resp = FakeResp(chunks, delay=0.005)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
 
     it = gen.__aiter__()
@@ -167,7 +167,7 @@ async def test_slot_released_when_consumer_vanishes(sm, no_meta, monkeypatch):
     resp = FakeResp(chunks, delay=0.005)
 
     _ = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
     # never consume, never close
 
@@ -184,7 +184,7 @@ async def test_backend_error_mid_stream_releases_slot(sm, no_meta):
     resp = FakeResp([b"a", b"b", b"c"], delay=0.005, fail_after=2)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
 
     received = [c async for c in gen]
@@ -214,7 +214,7 @@ async def test_read_timeout_mid_stream_is_marked_retryable(sm, no_meta):
     resp = FakeResp([b"a", b"b"], fail_after=1, fail_exc=httpx.ReadTimeout)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
 
     received = [c async for c in gen]
@@ -254,7 +254,7 @@ async def test_proxy_bug_mid_stream_is_not_marked_retryable(sm, no_meta):
     resp = ProxyBugResp([b"a", b"b"])
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
 
     received = [c async for c in gen]
@@ -297,7 +297,7 @@ async def test_backend_cancel_mid_stream_emits_error_event(sm, no_meta):
     resp = CancelResp([b"a", b"b", b"c"])
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
 
     received = [c async for c in gen]
@@ -331,7 +331,7 @@ async def test_small_stream_does_not_save_cache(sm, monkeypatch):
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=False
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=False
     )
     received = [c async for c in gen]
 
@@ -353,7 +353,7 @@ async def test_big_stream_saves_cache(sm, monkeypatch):
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
     _ = [c async for c in gen]
     await _pump(0.3)
@@ -377,7 +377,7 @@ async def test_partial_stream_does_not_save_cache(sm, monkeypatch):
     resp = FakeResp([b"a", b"b", b"c"], delay=0.005, fail_after=2)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
     _ = [c async for c in gen]
 
@@ -398,7 +398,7 @@ async def test_meta_written_when_save_succeeds(sm, monkeypatch):
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
     _ = [c async for c in gen]
     await _pump(0.2)
@@ -421,7 +421,7 @@ async def test_meta_not_written_when_save_fails(sm, monkeypatch):
     resp = FakeResp([b"a", b"b"], delay=0.005)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
     _ = [c async for c in gen]
     await _pump(0.2)
@@ -459,7 +459,7 @@ async def test_reader_cancel_while_save_pending_does_not_kill_save(
     resp = FakeResp(chunks, delay=0.005)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
 
     drained: list[bytes] = []
@@ -527,7 +527,7 @@ async def test_disconnect_at_aclose_keeps_save(sm, monkeypatch):
     resp = BlockingAcloseResp(chunks)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
     it = gen.__aiter__()
     received = [await it.__anext__() for _ in chunks]
@@ -562,7 +562,7 @@ async def test_reader_task_kept_alive_until_done(sm, no_meta):
     resp = FakeResp([b"a", b"b"], delay=0.01)
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
 
     tasks = getattr(chat_flow, "_READER_TASKS", None)
@@ -599,7 +599,7 @@ async def test_put_timeout_emits_error_event_before_sentinel(sm, no_meta, monkey
     resp = FakeResp(chunks, delay=0.05)
 
     _ = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
 
     # Stalled consumer: drain a few items, then stop draining so the queue
@@ -647,7 +647,7 @@ async def test_put_timeout_does_not_save_partial_stream(sm, monkeypatch):
     resp = FakeResp(chunks, delay=0.005)
 
     _ = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True
     )
     await _pump(1.0)
 
@@ -685,7 +685,7 @@ async def test_disconnect_at_aclose_ends_ui_request(sm, monkeypatch):
     resp = BlockingAcloseResp([b"a", b"b", b"c"])
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True, rid=rid
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True, rid=rid
     )
     it = gen.__aiter__()
     for _ in range(3):

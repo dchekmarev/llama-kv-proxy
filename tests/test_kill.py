@@ -384,7 +384,7 @@ async def test_kill_before_the_reader_exists_closes_the_response(sm, meta_dir):
             ["b"],
             "m1",
             sm,
-            is_big=False,
+            do_save=False,
             rid="rid-early",
             kill_token=token,
         )

@@ -113,13 +113,13 @@ def test_env_float_bad_value_raises_with_name(monkeypatch):
 
 def test_env_bool_truthy_and_falsy(monkeypatch):
     for v in ("1", "true", "yes", "on"):
-        monkeypatch.setenv("ERASE_BEFORE_CHAT", v)
-        assert config._env_bool("ERASE_BEFORE_CHAT", False) is True
+        monkeypatch.setenv("SKIP_RESTORE_SAME_SLOT", v)
+        assert config._env_bool("SKIP_RESTORE_SAME_SLOT", False) is True
     for v in ("0", "false", "no", "off"):
-        monkeypatch.setenv("ERASE_BEFORE_CHAT", v)
-        assert config._env_bool("ERASE_BEFORE_CHAT", True) is False
-    monkeypatch.delenv("ERASE_BEFORE_CHAT", raising=False)
-    assert config._env_bool("ERASE_BEFORE_CHAT", True) is True
+        monkeypatch.setenv("SKIP_RESTORE_SAME_SLOT", v)
+        assert config._env_bool("SKIP_RESTORE_SAME_SLOT", True) is False
+    monkeypatch.delenv("SKIP_RESTORE_SAME_SLOT", raising=False)
+    assert config._env_bool("SKIP_RESTORE_SAME_SLOT", True) is True
 
 
 def test_init_runtime_creates_dirs(monkeypatch, tmp_path):

@@ -67,7 +67,7 @@ async def start_stream_task(
     blocks: list[str],
     model_id: str,
     sm: SlotManager,
-    is_big: bool,
+    do_save: bool,
     prefix_hashes: list[str] | None = None,
     clients: list[LlamaClient] | None = None,
     messages: list[dict] | None = None,
@@ -350,7 +350,7 @@ async def start_stream_task(
                         resp_payload["timings"] = stream_timings
                 reqlog.log_file("response", rid, ts, resp_payload)
                 reqlog.log_file("raw", rid, ts, {"sse": "".join(raw_parts)})
-                if not (completed and is_big):
+                if not (completed and do_save):
                     ptask = asyncio.create_task(
                         chat_flow._log_prefix_group(
                             rid,
@@ -387,7 +387,7 @@ async def start_stream_task(
             # the slot. (Creating it after aclose lost the save to exactly that
             # cancellation: handed_off stayed False and the slot was released
             # with no .bin/meta written.)
-            if completed and is_big:
+            if completed and do_save:
                 save_task = asyncio.create_task(
                     chat_flow._background_save(
                         clients or [],

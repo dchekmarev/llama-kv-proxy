@@ -16,7 +16,7 @@ REQUEST_LOG_DIR, all sharing the {timestamp_ms}.{request_id} prefix:
                             matched against, plus its cache key
 - {ts}.{rid}.raw.json       (stream only) the raw SSE stream as received
 - {ts}.{rid}.decision.json  the proxy's per-request cache decision: big/small,
-                            restore candidate + outcome, erase, slot KV state
+                            restore candidate + outcome, slot KV state
                             after restore, and the save result
 
 Only the newest REQUEST_LOG_MAX_GROUPS groups are kept: after every write the

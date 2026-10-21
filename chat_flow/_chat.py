@@ -148,11 +148,14 @@ async def _chat_once(
     """One attempt of the pipeline (re-run after a pause or backend failure)."""
     messages: list[dict] = data.get("messages") or []
     stream = bool(data.get("stream", False))
-    # A client opts a request out of the KV cache by sending cache_prompt:false
-    # in the body. Such a request is proxied onto a free/oldest slot untouched:
-    # no restore search, no pre-chat erase, and no save of bin/meta. Absent or
-    # true keeps the normal big/small cache behavior.
+    # A client opts out of the KV cache entirely with cache_prompt:false:
+    # such a request is proxied onto a free/oldest slot untouched -- no
+    # restore search and no save of bin/meta. cache_write:false is the finer
+    # control: the restore side stays on, only saving the result is off.
+    # Neither flag participates in the cache key (they are not render-context
+    # fields), so conversations that differ only by these flags share a key.
     no_cache = data.get("cache_prompt") is False
+    cache_write = data.get("cache_write") is not False
 
     client_model = data.get("model") or None
     effective_model, no_cache = await chat_flow_pkg._resolve_effective_model(
@@ -169,9 +172,11 @@ async def _chat_once(
         messages, effective_model, chat_flow_pkg.WORDS_PER_BLOCK, chat_flow_pkg.REASONING_IN_KEY, render_ctx
     )
     is_big = n_words > chat_flow_pkg.BIG_THRESHOLD_WORDS
-    # A no-cache request skips all cache treatment (restore + save) and the
-    # pre-chat erase: it is proxied onto a free/oldest slot untouched.
-    do_cache = is_big and not no_cache
+    # Only big requests get the cache treatment. A cache_prompt:false request
+    # skips restore and save; a cache_write:false request keeps the restore
+    # side and only skips the save.
+    do_restore = is_big and not no_cache
+    do_save = do_restore and cache_write
 
     # Live dashboard: register the request (no-op when the UI is off).
     ui_obs.req_start(
@@ -240,11 +245,11 @@ async def _chat_once(
         return JSONResponse({"error": "killed"}, status_code=499)
 
     decision: dict = chat_flow_pkg._new_decision(
-        is_big, no_cache, n_words, effective_model, render_ctx
+        is_big, no_cache, cache_write, n_words, effective_model, render_ctx
     )
 
     restore_key = await chat_flow_pkg._select_restore_candidate(
-        prefix_hashes, blocks, effective_model, do_cache, no_cache, n_words, decision
+        prefix_hashes, blocks, effective_model, do_restore, no_cache, n_words, decision
     )
 
     log.info(
@@ -256,7 +261,7 @@ async def _chat_once(
     # Only a big request with a selected candidate can restore, so only it
     # needs a pending entry: a concurrent subsumed deletion of its key must be
     # able to substitute the replacement cache before the slot is acquired.
-    if do_cache and restore_key is not None:
+    if do_restore and restore_key is not None:
         chat_flow_pkg._register_pending_restore(restore_key)
     # Refresh the model's slot pools before picking a slot: a slot cut/reload on
     # the backend is otherwise only seen at the next periodic poll, and a stale
@@ -324,8 +329,8 @@ async def _chat_once(
                     chat_flow_pkg.race_pause(
                         sm.acquire_for_request(
                             effective_model,
-                            restore_key if do_cache else None,
-                            resolve_restore_key=chat_flow_pkg._resolve_restore_key if do_cache else None,
+                            restore_key if do_restore else None,
+                            resolve_restore_key=chat_flow_pkg._resolve_restore_key if do_restore else None,
                             need_tokens=need_tokens,
                         ),
                     ),
@@ -372,7 +377,7 @@ async def _chat_once(
             killed_flag = True
             return _killed()
     finally:
-        if do_cache and restore_key:
+        if do_restore and restore_key:
             chat_flow_pkg._unregister_pending_restore(restore_key)
 
     # The slot is released exactly once per request:
@@ -429,19 +434,21 @@ async def _chat_once(
         )
 
         await chat_flow_pkg._settle_restore(
-            client, slot_id, effective_model, restored, used_key, no_cache, decision
+            slot_id, effective_model, restored, used_key, decision
         )
 
         body = dict(data)
+        body.pop("cache_write", None)
         body["model"] = effective_model
-        body["cache_prompt"] = bool(do_cache)
+        body["cache_prompt"] = bool(do_restore)
         body["n_keep"] = -1
 
         opts = dict(body.get("options") or {})
+        opts.pop("cache_write", None)
         opts["slot_id"] = slot_id
         opts["id_slot"] = slot_id
         opts["n_keep"] = -1
-        opts["cache_prompt"] = bool(do_cache)
+        opts["cache_prompt"] = bool(do_restore)
         body["options"] = opts
 
         log.info(
@@ -503,7 +510,7 @@ async def _chat_once(
                 blocks,
                 effective_model,
                 sm,
-                do_cache,
+                do_save,
                 prefix_hashes,
                 clients,
                 messages,
@@ -591,7 +598,7 @@ async def _chat_once(
             if isinstance(out.get("usage"), dict):
                 ui_obs.req_usage(rid, out["usage"])
             ui_obs.req_ttft(rid, time.monotonic() - t0_mono)
-            if do_cache:
+            if do_save:
                 # Save + meta + subsumed-meta cleanup (see the stream reader)
                 # runs in the background: the .bin write must not delay the
                 # JSON response. The task owns the slot and releases it, and

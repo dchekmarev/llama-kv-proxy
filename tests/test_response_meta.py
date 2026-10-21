@@ -133,7 +133,7 @@ async def test_stream_saves_response_extended_meta(sm, monkeypatch):
     messages = [{"role": "user", "content": "hi"}]
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True, messages=messages
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True, messages=messages
     )
     _ = [c async for c in gen]
     await _pump(0.2)
@@ -163,7 +163,7 @@ async def test_stream_parses_sse_split_across_chunks(sm, monkeypatch):
     messages = [{"role": "user", "content": "hi"}]
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True, messages=messages
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True, messages=messages
     )
     _ = [c async for c in gen]
     await _pump(0.2)
@@ -184,7 +184,7 @@ async def test_stream_without_response_falls_back_to_prompt_meta(sm, monkeypatch
     messages = [{"role": "user", "content": "hi"}]
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True, messages=messages
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True, messages=messages
     )
     _ = [c async for c in gen]
     await _pump(0.2)
@@ -212,7 +212,7 @@ async def test_stream_falls_back_when_saved_values_fail(sm, monkeypatch):
     messages = [{"role": "user", "content": "hi"}]
 
     gen = await chat_flow.start_stream_task(
-        resp, g, "k" * 16, "prefix", ["b"], "model", sm, is_big=True, messages=messages
+        resp, g, "k" * 16, "prefix", ["b"], "model", sm, do_save=True, messages=messages
     )
     _ = [c async for c in gen]
     await _pump(0.2)

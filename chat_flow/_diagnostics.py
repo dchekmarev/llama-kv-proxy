@@ -114,6 +114,7 @@ def _error_response(body: dict, status: int) -> JSONResponse:
 def _new_decision(
     is_big: bool,
     no_cache: bool,
+    cache_write: bool,
     n_words: int,
     model_id: str,
     render_ctx: dict,
@@ -125,6 +126,7 @@ def _new_decision(
     return {
         "is_big": is_big,
         "no_cache": no_cache,
+        "cache_write": cache_write,
         "n_words": n_words,
         "words_threshold": chat_flow.BIG_THRESHOLD_WORDS,
         "model": model_id,
@@ -137,7 +139,6 @@ def _new_decision(
             "stale_meta_dropped": False,
         },
         "wait_inflight_save": False,
-        "erase_done": False,
         "slot": None,
         "slot_before_chat": None,
     }

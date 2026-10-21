@@ -32,6 +32,8 @@ A request is **big** when its prompt has more than `BIG_THRESHOLD_WORDS` words (
 
 - **Big** requests get the full cache treatment: match, restore, then save + meta after the response.
 - **Small** requests are routed to a free or oldest slot without touching the disk cache.
+- A big request with no restore candidate leaves the chosen slot as-is: llama.cpp keeps the tokens the slot already shares with the prompt and drops the rest, so a partial prefix is reused for free. The proxy issues no pre-chat slot erase; llama.cpp clears the slot itself on restore and truncates it to the common prefix on a miss.
+- `cache_prompt:false` opts the request out of the KV cache entirely (no restore, no save). `cache_write:false` disables only the save: the restore side stays on.
 
 ### Cache matching (two-tier)
 
@@ -104,7 +106,8 @@ With several `BACKENDS`, the shared per-backend health state (`backend/health.py
 The proxy forwards the client's request body to the backend verbatim (pass-through) and injects the following fields:
 
 - `model` — from the request, else the backend's model id (TTL-cached), else `MODEL_ID`;
-- `cache_prompt` — `true` for big requests (more than `BIG_THRESHOLD_WORDS` words);
+- `cache_prompt` — `true` for big requests (more than `BIG_THRESHOLD_WORDS` words) unless the client sent `cache_prompt:false`;
+- `cache_write` — stripped from the body (never forwarded); `false` keeps the restore side and disables the save;
 - `n_keep` — `-1` (see Limitations);
 - slot pinning: `slot_id`/`id_slot` are duplicated in the body root, in `options`, and in the query parameters, so the request is pinned to the selected slot.
 
@@ -291,7 +294,6 @@ All parameters are environment variables; defaults in parentheses.
 | `BIN_RECONCILE_INTERVAL_S` | `600` | Interval between meta/.bin reconciliations (both directions); `0` disables. |
 | `BIN_SAVE_GRACE_S` | `10` | Grace window: a `.bin` without a meta modified within this window is treated as an in-flight save and skipped. `0` disables the guard. |
 | `MIN_BIN_SIZE_VALID` | `1` | Minimum size (MB) of a saved `.bin` to count as a real slot save; smaller files are treated as empty captures and discarded without writing a meta. `0` disables the check. |
-| `ERASE_BEFORE_CHAT` | `1` | `1` erases a slot's in-memory KV before any chat that was not preceded by a successful restore, so it does not start on top of a stale or oversized prompt (which can wedge llama.cpp in `PROCESSING_PROMPT`). On by default. |
 | `SKIP_RESTORE_SAME_SLOT` | `1` | `1` skips a pre-chat restore when the picked slot already holds the target key's KV (it just saved it, or it was restored there and unused since). On by default. |
 | `STUCK_SLOT_THRESHOLD_S` | `1500` | Watchdog: a backend slot reporting `is_processing` for longer than this is presumed wedged and is erased to recover the backend without a restart. `0` disables. |
 | `MAX_TOKENS` | `32768` | Generation budget reserved per admitted request when the client sends neither `max_tokens` nor `n_predict`; the demand is `estimated_prompt_tokens + min(MAX_TOKENS, client cap)`. |

@@ -201,7 +201,7 @@ async def test_continuation_waits_for_inflight_save_and_restores(
     client.restore_slot.assert_awaited_once()
     _slot_id, restored_key = client.restore_slot.call_args.args[:2]
     assert restored_key == key_m, "M+1 must restore from M's in-flight save key"
-    client.erase_slot.assert_not_awaited()  # a successful restore skips the erase
+    client.erase_slot.assert_not_awaited()  # no pre-chat erase at all
     await _pump()
     _assert_all_free(sm)
 
@@ -226,7 +226,7 @@ async def test_inflight_save_timeout_proceeds_without_restore(
     assert resp.status_code == 200
     client = sm.backends[0]["client"]
     client.restore_slot.assert_not_awaited()
-    client.erase_slot.assert_awaited()  # no restore -> the slot is erased
+    client.erase_slot.assert_not_awaited()  # a miss leaves the slot alone
     assert any(
         "inflight_save_wait_timeout" in r.message for r in caplog.records
     ), "the timed-out wait must be logged"
